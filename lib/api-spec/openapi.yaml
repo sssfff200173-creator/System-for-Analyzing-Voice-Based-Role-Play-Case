@@ -3,13 +3,15 @@ info:
   # Do not change the title, if the title changes, the import paths will be broken
   title: Api
   version: 0.1.0
-  description: API specification
+  description: HR Voice Assessment API
 servers:
   - url: /api
     description: Base API path
 tags:
   - name: health
     description: Health operations
+  - name: assessment
+    description: HR assessment operations
 paths:
   /healthz:
     get:
@@ -24,6 +26,119 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/HealthStatus"
+
+  /assessment/audio/{phraseIndex}:
+    get:
+      operationId: getPhraseAudio
+      tags: [assessment]
+      summary: Get TTS audio for a client phrase
+      description: Returns pre-generated TTS audio for the given phrase index (0 or 1)
+      parameters:
+        - name: phraseIndex
+          in: path
+          required: true
+          schema:
+            type: integer
+      responses:
+        "200":
+          description: Audio file (audio/mpeg)
+          content:
+            audio/mpeg:
+              schema:
+                type: string
+                format: binary
+        "404":
+          description: Phrase not found
+
+  /assessment/transcribe:
+    post:
+      operationId: transcribeAudio
+      tags: [assessment]
+      summary: Transcribe candidate audio via Whisper
+      description: Accepts audio blob and returns transcription text
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              properties:
+                audio:
+                  type: string
+                  format: binary
+              required:
+                - audio
+      responses:
+        "200":
+          description: Transcription result
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TranscribeResponse"
+        "400":
+          description: Bad request
+
+  /assessment/evaluate:
+    post:
+      operationId: evaluateAssessment
+      tags: [assessment]
+      summary: Evaluate full dialogue via YandexGPT and save to DB
+      description: Takes candidate name and full dialogue, evaluates via YandexGPT, saves result
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/EvaluateRequest"
+      responses:
+        "200":
+          description: HR evaluation result
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/EvaluateResponse"
+        "400":
+          description: Bad request
+        "500":
+          description: Evaluation error
+
+  /assessment/results:
+    get:
+      operationId: listResults
+      tags: [assessment]
+      summary: List all assessment results
+      description: Returns all saved assessment results ordered by date
+      responses:
+        "200":
+          description: List of assessment results
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/AssessmentResult"
+
+  /assessment/results/{id}:
+    get:
+      operationId: getResult
+      tags: [assessment]
+      summary: Get a single assessment result
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: integer
+      responses:
+        "200":
+          description: Assessment result
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AssessmentResult"
+        "404":
+          description: Not found
+
 components:
   schemas:
     HealthStatus:
@@ -34,3 +149,105 @@ components:
       required:
         - status
 
+    TranscribeResponse:
+      type: object
+      properties:
+        text:
+          type: string
+        isEmpty:
+          type: boolean
+      required:
+        - text
+        - isEmpty
+
+    DialogTurn:
+      type: object
+      properties:
+        role:
+          type: string
+          enum: [client, candidate]
+        text:
+          type: string
+      required:
+        - role
+        - text
+
+    EvaluateRequest:
+      type: object
+      properties:
+        candidateName:
+          type: string
+        dialogue:
+          type: array
+          items:
+            $ref: "#/components/schemas/DialogTurn"
+      required:
+        - candidateName
+        - dialogue
+
+    EvaluationMarkers:
+      type: object
+      properties:
+        fillerWordCount:
+          type: integer
+        politenessMarkers:
+          type: integer
+      required:
+        - fillerWordCount
+        - politenessMarkers
+
+    EvaluationResult:
+      type: object
+      properties:
+        verdict:
+          type: string
+        markers:
+          $ref: "#/components/schemas/EvaluationMarkers"
+        quotes:
+          type: array
+          items:
+            type: string
+      required:
+        - verdict
+        - markers
+        - quotes
+
+    EvaluateResponse:
+      type: object
+      properties:
+        id:
+          type: integer
+        candidateName:
+          type: string
+        evaluation:
+          $ref: "#/components/schemas/EvaluationResult"
+        fullTranscript:
+          type: string
+        createdAt:
+          type: string
+      required:
+        - id
+        - candidateName
+        - evaluation
+        - fullTranscript
+        - createdAt
+
+    AssessmentResult:
+      type: object
+      properties:
+        id:
+          type: integer
+        candidateName:
+          type: string
+        evaluation:
+          $ref: "#/components/schemas/EvaluationResult"
+        fullTranscript:
+          type: string
+        createdAt:
+          type: string
+      required:
+        - id
+        - candidateName
+        - evaluation
+        - fullTranscript
+        - createdAt

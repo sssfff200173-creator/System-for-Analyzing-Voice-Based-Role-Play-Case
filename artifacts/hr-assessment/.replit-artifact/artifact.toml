@@ -1,0 +1,31 @@
+kind = "web"
+previewPath = "/"
+title = "Role Cases AI-assessor"
+version = "1.0.0"
+id = "artifacts/hr-assessment"
+router = "path"
+
+[[integratedSkills]]
+name = "react-vite"
+version = "1.0.0"
+
+[[services]]
+name = "web"
+paths = [ "/" ]
+localPort = 19570
+
+[services.development]
+run = "pnpm --filter @workspace/hr-assessment run dev"
+
+[services.production]
+build = [ "pnpm", "--filter", "@workspace/hr-assessment", "run", "build" ]
+publicDir = "artifacts/hr-assessment/dist/public"
+serve = "static"
+
+[[services.production.rewrites]]
+from = "/*"
+to = "/index.html"
+
+[services.env]
+PORT = "19570"
+BASE_PATH = "/"
