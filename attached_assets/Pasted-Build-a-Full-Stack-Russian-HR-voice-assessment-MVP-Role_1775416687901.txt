@@ -1,0 +1,33 @@
+Build a Full-Stack Russian HR voice assessment MVP ("Role Cases AI-assessor") for contact center hiring.
+
+Tech Stack:
+- Frontend: React + TypeScript + Vite + Tailwind CSS.
+- Backend: Python + FastAPI.
+- Database: SQLite via SQLAlchemy (use DATABASE_URL for future Postgres migration).
+- APIs: OpenAI Whisper API (for STT), OpenAI TTS API (voice: nova, for client voice), YandexGPT API (for final HR evaluation).
+
+Architecture & Logic:
+1. Start Screen: Ask the user to enter their Name (to save to the DB as candidate_name) before starting the case.
+2. Scenario Config (Hardcoded Actor): Store the 2 client phrases in a backend config file. Do NOT use an LLM to generate client replies on the fly.
+   - Phrase 1: "Здрасте, я купила телефон с доставкой, забрала из пункта выдачи заказов, а когда пришла домой, поняла, что там царапина, хотела вернуть в пункт выдачи заказов, а там не принимают, что делать?"
+   - Phrase 2: "Я уже 3 раз звоню вам, вы ничего не можете решить, для чего вы там сидите?"
+   *Important: Generate the OpenAI TTS audio for these 2 static phrases once and serve the audio files to the frontend, or cache them on the backend.*
+3. Recording: Use browser MediaRecorder. Candidate explicitly clicks "🎙 Начать запись" and "⏹ Завершить запись". Send the audio file to the backend -> OpenAI Whisper API.
+4. Continuous Flow: This is ONE continuous dialogue. Do NOT show labels like "Situation 1" or "Situation 2". After candidate answer 1 is transcribed, automatically play Phrase 2.
+5. Silence Handling: If Whisper STT returns empty or unintelligible text, do NOT crash and do NOT move to the next step. Show this exact Russian text and allow the user to retry recording: "К сожалению, Вас не слышно, пожалуйста, повторите ответ. Мы будем рады Вас послушать!"
+6. Context & Final Evaluation: Backend stores the dialog history. After answer 2, send the full dialog (both client phrases and both candidate answers) to YandexGPT API. Prompt YandexGPT to act as a strict HR evaluator and return strict JSON:
+   - "verdict": "Рекомендуется" OR "Не рекомендуется" (Fail if >2 filler words like "ну, типа, короче" OR any rude/profane language).
+   - "markers": count of filler words, politeness markers.
+   - "quotes": exact candidate phrases illustrating the markers.
+7. Storage: Save candidate_name, full_transcript, and the evaluation JSON to the SQLite database. Show the parsed HR report on the final Result screen.
+
+UI Requirements:
+- Strictly Russian language for all UI text.
+- Clean B2B SaaS aesthetic (white/light gray background, solid yellow accents).
+- Mobile-friendly, large touch targets for recording buttons.
+
+Constraints for the AI Agent:
+- Keep code modular: separate `frontend/` and `backend/` directories.
+- In backend, create separate files for `prompts.py` (for YandexGPT), `config.py` (for scenario text), and `database.py`.
+- Read OPENAI_API_KEY, YANDEX_API_KEY, and YANDEX_FOLDER_ID from environment variables (.env). Do not hardcode secrets.
+- Provide a clean README.md with setup instructions.
