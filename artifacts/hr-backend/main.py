@@ -35,7 +35,7 @@ YANDEX_FOLDER_ID = os.environ.get("YANDEX_FOLDER_ID", "")
 Path(AUDIO_CACHE_DIR).mkdir(exist_ok=True)
 
 
-async def generate_audio_cache() -> None:
+async def generate_audio_cacheartifacts/hr-backend/config.py() -> None:
     for i, phrase in enumerate(CLIENT_PHRASES):
         audio_path = Path(AUDIO_CACHE_DIR) / f"phrase_{i}.mp3"
         if audio_path.exists():

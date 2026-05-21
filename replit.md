@@ -1,40 +1,70 @@
-# HR Voice Assessment App
+# Role Cases AI-ассистент — HR Voice Assessment
 
-## Architecture
+## Обзор
 
-- **Frontend**: React + Vite (`artifacts/hr-assessment/`) — runs at port 18664 via `artifacts/hr-stub: web` workflow
-- **Backend**: FastAPI + Python (`artifacts/hr-backend/`) — runs at port 8000 via `HR Backend` workflow
-- **API Proxy**: Vite dev server proxies `/api/*` to `http://localhost:8000`
+Full-stack приложение для голосовой оценки кандидатов контакт-центра.
 
-## Workflows
+## Стек
 
-| Name | Command | Port | Type |
-|------|---------|------|------|
-| `artifacts/hr-stub: web` | `pnpm install && pnpm --filter @workspace/hr-assessment run dev` | 18664 | webview |
-| `HR Backend` | `cd artifacts/hr-backend && python run.py` | 8000 | console |
+| Слой | Технология |
+|------|-----------|
+| Frontend | React 18 + TypeScript + Vite + Tailwind CSS |
+| Backend | Python 3.12 + FastAPI + Uvicorn |
+| БД | PostgreSQL (SQLAlchemy, DATABASE_URL из env) |
+| STT | OpenAI Whisper API |
+| TTS | OpenAI TTS API (голос nova) |
+| Оценка | YandexGPT API |
 
-## Environment Variables Required
+## Структура
 
-- `OPENAI_API_KEY` — for Whisper STT + TTS audio generation
-- `YANDEX_API_KEY` — for YandexGPT HR evaluation
-- `YANDEX_FOLDER_ID` — for YandexGPT model URI
+```
+backend/
+  main.py       — FastAPI-приложение, все эндпоинты
+  config.py     — фразы клиента + список Whisper-галлюцинаций
+  database.py   — SQLAlchemy модель Candidate
+  prompts.py    — динамическая генерация системного промпта для YandexGPT
+  audio/        — кешированные TTS mp3-файлы
+frontend/
+  src/
+    App.tsx                 — роутинг между экранами
+    api.ts                  — fetch-обёртки для всех эндпоинтов
+    pages/StartPage.tsx     — имя, телефон, 3 критерия, согласие
+    pages/InterviewPage.tsx — воспроизведение аудио + запись
+    pages/ResultPage.tsx    — итоговый отчёт
+start.sh        — запускает backend (port 8000) + frontend dev (port 5000)
+```
 
-## Backend Details
+## Запуск
 
-- FastAPI app in `artifacts/hr-backend/main.py`
-- SQLite database at `artifacts/hr-backend/hr_assessments.db`
-- Audio cache at `artifacts/hr-backend/audio_cache/` (pre-generated phrase_0.mp3, phrase_1.mp3)
-- Uses relative imports — must run from `artifacts/hr-backend/` directory
+```
+sh start.sh
+```
 
-## Key API Endpoints
+- Backend: http://localhost:8000
+- Frontend: http://localhost:5000 (Vite proxy /api → backend)
 
-- `GET /api/healthz` — health check
-- `GET /api/assessment/audio/{0|1}` — TTS audio for client phrases
-- `POST /api/assessment/transcribe` — Whisper STT (multipart audio upload)
-- `POST /api/assessment/evaluate` — YandexGPT HR evaluation + DB save
-- `GET /api/assessment/results` — list all saved results
-- `GET /api/assessment/results/{id}` — single result
+## Переменные окружения
 
-## Artifact Registration
+| Переменная | Описание |
+|-----------|---------|
+| `OPENAI_API_KEY` | Whisper STT + TTS |
+| `YANDEX_API_KEY` | YandexGPT |
+| `YANDEX_FOLDER_ID` | ID папки Yandex Cloud |
+| `DATABASE_URL` | PostgreSQL (или sqlite:///./hr_assessor.db) |
 
-The frontend is registered as artifact `artifacts/hr-stub` (react-vite kind) at previewPath `/`. The actual code lives in `artifacts/hr-assessment/` — the artifact.toml in `artifacts/hr-stub/.replit-artifact/artifact.toml` points the dev/build commands to hr-assessment.
+## API эндпоинты
+
+| Метод | Путь | Описание |
+|-------|------|---------|
+| POST | /api/candidates | Создать кандидата (имя, телефон, согласие, критерии) |
+| GET | /api/audio/{1\|2} | TTS-аудио клиентских фраз |
+| POST | /api/transcribe | Whisper STT (multipart audio) |
+| POST | /api/evaluate | YandexGPT оценка + сохранение в БД |
+| GET | /api/results/{id} | Результаты по кандидату |
+
+## Ключевые особенности
+
+- **Стартовый экран**: имя, телефон, согласие на ПД, 3 чекбокса критериев (все включены по умолчанию)
+- **Whisper-фильтр**: при пустом тексте / галлюцинациях — ошибка "Вас не было слышно" + кнопка повтора
+- **Динамический промпт**: YandexGPT оценивает только выбранные критерии
+- **Результаты**: скрывает карточки невыбранных критериев; пустые счётчики строго = 0
