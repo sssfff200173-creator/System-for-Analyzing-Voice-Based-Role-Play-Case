@@ -1,5 +1,5 @@
 import os
-from sqlalchemy import create_engine, Column, Integer, String, Text, DateTime
+from sqlalchemy import create_engine, Column, Integer, String, Text, DateTime, LargeBinary
 from sqlalchemy.orm import declarative_base, sessionmaker
 from datetime import datetime
 
@@ -23,6 +23,19 @@ class Candidate(Base):
     full_transcript = Column(Text, nullable=True)
     evaluation_json = Column(Text, nullable=True)
     audio_path = Column(String, nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow)
+    interview_started_at = Column(DateTime, nullable=True)
+    interview_finished_at = Column(DateTime, nullable=True)
+
+
+class CandidateRecording(Base):
+    __tablename__ = "candidate_recordings"
+
+    id = Column(Integer, primary_key=True, index=True)
+    candidate_id = Column(Integer, index=True, nullable=False)
+    recording_index = Column(Integer, nullable=False)
+    audio_data = Column(LargeBinary, nullable=False)
+    content_type = Column(String, default="audio/webm")
     created_at = Column(DateTime, default=datetime.utcnow)
 
 
@@ -64,3 +77,14 @@ def init_db():
             conn.commit()
     except Exception:
         pass  # Column already exists
+    # Add interview start/finish timestamps if they don't exist
+    for col_sql in (
+        "ALTER TABLE candidates ADD COLUMN interview_started_at TIMESTAMP",
+        "ALTER TABLE candidates ADD COLUMN interview_finished_at TIMESTAMP",
+    ):
+        try:
+            with engine.connect() as conn:
+                conn.execute(__import__("sqlalchemy").text(col_sql))
+                conn.commit()
+        except Exception:
+            pass

@@ -33,6 +33,28 @@ function Modal({ title, onClose }: { title: string; onClose: () => void }) {
   );
 }
 
+const PHONE_MIN_DIGITS = 10;
+const PHONE_MAX_DIGITS = 15;
+
+function countDigits(value: string): number {
+  return (value.match(/\d/g) || []).length;
+}
+
+function sanitizePhoneInput(value: string): string {
+  // Allow only digits and common phone separators; cap at PHONE_MAX_DIGITS digits
+  const cleaned = value.replace(/[^\d+\-\s()]/g, "");
+  let digits = 0;
+  let result = "";
+  for (const ch of cleaned) {
+    if (/\d/.test(ch)) {
+      if (digits >= PHONE_MAX_DIGITS) continue;
+      digits++;
+    }
+    result += ch;
+  }
+  return result;
+}
+
 export default function StartPage({ onRegistered, sessionId }: Props) {
   const [name, setName] = useState("");
   const [phone, setPhone] = useState("");
@@ -43,12 +65,23 @@ export default function StartPage({ onRegistered, sessionId }: Props) {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
 
+  const phoneDigits = countDigits(phone);
+  const phoneValid = phoneDigits >= PHONE_MIN_DIGITS && phoneDigits <= PHONE_MAX_DIGITS;
+  const phoneError =
+    phone.trim() !== "" && !phoneValid
+      ? `Введите не менее ${PHONE_MIN_DIGITS} цифр (сейчас ${phoneDigits})`
+      : "";
+
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
     setError("");
 
     if (!name.trim()) { setError("Введите имя кандидата"); return; }
     if (!phone.trim()) { setError("Введите номер телефона"); return; }
+    if (!phoneValid) {
+      setError(`Номер телефона должен содержать не менее ${PHONE_MIN_DIGITS} цифр`);
+      return;
+    }
     if (!consent) { setError("Необходимо дать согласие на обработку персональных данных"); return; }
     if (!privacyConsent) { setError("Необходимо принять политику конфиденциальности"); return; }
 
@@ -111,11 +144,17 @@ export default function StartPage({ onRegistered, sessionId }: Props) {
               </label>
               <input
                 type="tel"
+                inputMode="tel"
                 value={phone}
-                onChange={(e) => setPhone(e.target.value)}
+                onChange={(e) => setPhone(sanitizePhoneInput(e.target.value))}
                 placeholder="+7 (999) 000-00-00"
-                className="w-full border border-gray-300 rounded-xl px-4 py-3 text-base focus:outline-none focus:ring-2 focus:ring-accent focus:border-transparent transition"
+                className={`w-full border rounded-xl px-4 py-3 text-base focus:outline-none focus:ring-2 focus:ring-accent focus:border-transparent transition ${
+                  phoneError ? "border-red-400" : "border-gray-300"
+                }`}
               />
+              {phoneError && (
+                <p className="text-xs text-red-600 mt-1">{phoneError}</p>
+              )}
             </div>
 
             <div className="pt-1 space-y-3">
@@ -170,8 +209,14 @@ export default function StartPage({ onRegistered, sessionId }: Props) {
 
             <button
               type="submit"
-              disabled={loading}
-              className="w-full bg-accent hover:bg-accent-hover disabled:opacity-60 text-gray-900 font-bold py-4 rounded-xl text-base transition active:scale-95"
+              disabled={
+                loading ||
+                !name.trim() ||
+                !phoneValid ||
+                !consent ||
+                !privacyConsent
+              }
+              className="w-full bg-accent hover:bg-accent-hover disabled:opacity-60 disabled:cursor-not-allowed text-gray-900 font-bold py-4 rounded-xl text-base transition active:scale-95"
             >
               {loading ? "Сохранение…" : "Далее →"}
             </button>

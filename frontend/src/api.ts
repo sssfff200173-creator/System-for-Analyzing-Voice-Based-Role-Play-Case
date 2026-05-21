@@ -140,11 +140,30 @@ export interface CandidateResult {
   transcript: string | null;
   evaluation: Evaluation | null;
   audio_urls: string[];
+  interview_started_at: string | null;
+  interview_finished_at: string | null;
+  interview_duration_sec: number | null;
 }
 
 export async function getResults(candidateId: number): Promise<CandidateResult> {
   const res = await fetch(`${BASE}/results/${candidateId}`);
   return handleResponse<CandidateResult>(res);
+}
+
+export async function markInterviewStarted(candidateId: number): Promise<void> {
+  await fetch(`${BASE}/candidates/${candidateId}/start`, { method: "POST" }).catch(() => {});
+}
+
+export async function deleteCandidate(candidateId: number): Promise<void> {
+  const res = await fetch(`${BASE}/candidates/${candidateId}`, { method: "DELETE" });
+  if (!res.ok) {
+    let detail = `HTTP ${res.status}`;
+    try {
+      const body = await res.json();
+      detail = body.detail || detail;
+    } catch {}
+    throw new Error(detail);
+  }
 }
 
 export async function uploadRecording(candidateId: number, blobs: Blob[]): Promise<void> {

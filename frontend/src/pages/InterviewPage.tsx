@@ -43,6 +43,40 @@ export default function InterviewPage({ candidate, onFinish }: Props) {
   const [step, setStep] = useState(0);
   const [phase, setPhase] = useState<PhaseState>("loading_audio");
   const [errorMsg, setErrorMsg] = useState("");
+  const [elapsedSec, setElapsedSec] = useState(0);
+  const timerIntervalRef = useRef<number | null>(null);
+  const timerStartRef = useRef<number>(0);
+
+  function startTimer() {
+    if (timerIntervalRef.current !== null) return;
+    timerStartRef.current = Date.now();
+    setElapsedSec(0);
+    timerIntervalRef.current = window.setInterval(() => {
+      setElapsedSec(Math.floor((Date.now() - timerStartRef.current) / 1000));
+    }, 1000);
+  }
+
+  function stopTimer() {
+    if (timerIntervalRef.current !== null) {
+      window.clearInterval(timerIntervalRef.current);
+      timerIntervalRef.current = null;
+    }
+  }
+
+  useEffect(() => {
+    return () => {
+      if (timerIntervalRef.current !== null) {
+        window.clearInterval(timerIntervalRef.current);
+        timerIntervalRef.current = null;
+      }
+    };
+  }, []);
+
+  function formatDuration(totalSec: number): string {
+    const mm = Math.floor(totalSec / 60).toString().padStart(2, "0");
+    const ss = (totalSec % 60).toString().padStart(2, "0");
+    return `${mm}:${ss}`;
+  }
 
   // Use refs to always have fresh values inside MediaRecorder callbacks
   const stepRef = useRef(0);
@@ -56,14 +90,7 @@ export default function InterviewPage({ candidate, onFinish }: Props) {
   onFinishRef.current = onFinish;
   candidateRef.current = candidate;
 
-  // Pre-request mic permission on mount so the browser dialog + system sound
-  // happen BEFORE the TTS audio starts playing, not right after it ends.
-  useEffect(() => {
-    navigator.mediaDevices
-      .getUserMedia({ audio: true })
-      .then((stream) => stream.getTracks().forEach((t) => t.stop()))
-      .catch(() => {});
-  }, []);
+  // Mic permission is requested earlier on the preparation screen.
 
   // Load & auto-play TTS for current step
   useEffect(() => {
@@ -72,8 +99,9 @@ export default function InterviewPage({ candidate, onFinish }: Props) {
     const audio = new Audio(`/api/audio/${phraseId}`);
 
     // Trim trailing artifact ("noise") at the end of TTS audio.
-    // Phrase 2 has a longer tail noise — trim more aggressively.
-    const TAIL_TRIM_SEC = phraseId === 2 ? 1.35 : 0.5;
+    // Phrase 2 — let it play to the natural end (the previous trim was cutting
+    // off ~2s of speech); rely on `onended` to advance to the recording phase.
+    const TAIL_TRIM_SEC = phraseId === 2 ? 0 : 0.5;
     let stopped = false;
     const stopEarly = () => {
       if (stopped) return;
@@ -196,9 +224,13 @@ export default function InterviewPage({ candidate, onFinish }: Props) {
         processBlob(blob);
       };
 
-      recorder.start();
+      // Use a small timeslice so chunks are flushed regularly. This avoids a
+      // common MediaRecorder bug where the very last segment of audio is
+      // dropped on stop(), making the recording sound clipped/silent at the end.
+      recorder.start(500);
       mediaRecorderRef.current = recorder;
       setPhase("recording");
+      startTimer();
     } catch {
       setErrorMsg("Не удалось получить доступ к микрофону. Разрешите доступ и попробуйте снова.");
       setPhase("error");
@@ -206,7 +238,25 @@ export default function InterviewPage({ candidate, onFinish }: Props) {
   }
 
   function stopRecording() {
-    mediaRecorderRef.current?.stop();
+    const recorder = mediaRecorderRef.current;
+    if (!recorder) return;
+    stopTimer();
+    // Flush any buffered audio (final chunk) BEFORE stopping. Without this,
+    // browsers occasionally drop ~1–2s of trailing audio when stop() is called
+    // immediately after the user finishes speaking.
+    try {
+      recorder.requestData();
+    } catch {
+      /* not supported in some browsers — safe to ignore */
+    }
+    // Slight delay lets the dataavailable event fire before stop().
+    setTimeout(() => {
+      try {
+        recorder.stop();
+      } catch {
+        /* already stopped */
+      }
+    }, 120);
     setPhase("transcribing");
   }
 
@@ -283,6 +333,23 @@ export default function InterviewPage({ candidate, onFinish }: Props) {
 
       {/* Bottom: mic button */}
       <div className="w-full pb-6 flex flex-col items-center gap-4">
+        {/* Recording timer — visible only while recording */}
+        {isRecording && (
+          <div
+            className="flex items-center gap-2 bg-gray-900 text-white px-4 py-1.5 rounded-full shadow-md"
+            aria-live="polite"
+            aria-label={`Длительность записи ${formatDuration(elapsedSec)}`}
+          >
+            <span className="relative flex h-2.5 w-2.5">
+              <span className="absolute inline-flex h-full w-full rounded-full bg-red-500 opacity-75 animate-ping" />
+              <span className="relative inline-flex rounded-full h-2.5 w-2.5 bg-red-500" />
+            </span>
+            <span className="font-mono text-sm font-semibold tabular-nums">
+              {formatDuration(elapsedSec)}
+            </span>
+          </div>
+        )}
+
         {(isIdle || phase === "error") && (
           <button
             onClick={startRecording}

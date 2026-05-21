@@ -14,12 +14,13 @@ load_dotenv()
 import httpx
 from fastapi import FastAPI, Depends, UploadFile, File, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, Response
+from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
 from backend.config import CLIENT_PHRASES, WHISPER_HALLUCINATIONS
-from backend.database import Candidate, InterviewSession, get_db, init_db
+from backend.database import Candidate, CandidateRecording, InterviewSession, get_db, init_db
 from backend.prompts import ALL_CRITERIA, build_system_prompt, build_evaluation_prompt
 
 logging.basicConfig(level=logging.INFO)
@@ -56,6 +57,28 @@ def _seed_data():
             db.add(InterviewSession(session_id="demo", status="demo"))
             db.commit()
             logger.info("Seeded demo session")
+
+        # Backfill: any candidate that finished an interview but isn't linked
+        # to any session (typically demo-link runs from before this fix) should
+        # also appear in the HR dashboard. Wrap each in its own demo session.
+        linked_ids = {
+            row[0] for row in db.query(InterviewSession.candidate_id)
+            .filter(InterviewSession.candidate_id.isnot(None)).all()
+        }
+        orphans = db.query(Candidate).filter(~Candidate.id.in_(linked_ids)).all() if linked_ids \
+            else db.query(Candidate).all()
+        for c in orphans:
+            new_sid = f"demo-{uuid.uuid4().hex[:8]}"
+            db.add(InterviewSession(
+                session_id=new_sid,
+                status="completed" if c.evaluation_json else "in_progress",
+                candidate_id=c.id,
+                created_at=c.created_at,
+                selected_criteria=c.selected_criteria,
+            ))
+            logger.info(f"Backfilled orphan candidate {c.id} → session {new_sid}")
+        if orphans:
+            db.commit()
 
         # Seed test candidates only if seed sessions don't exist yet
         already_seeded = db.query(InterviewSession).filter(
@@ -320,6 +343,8 @@ def get_session(session_id: str, db: Session = Depends(get_db)):
 
 @app.get("/api/sessions")
 def list_sessions(db: Session = Depends(get_db)):
+    # Hide only the "demo" template session itself; per-candidate demo runs
+    # (session_id like "demo-xxxx") should appear in the dashboard.
     sessions = (
         db.query(InterviewSession)
         .filter(InterviewSession.session_id != "demo")
@@ -383,8 +408,18 @@ def create_candidate(payload: CandidateCreate, db: Session = Depends(get_db)):
     db.commit()
     db.refresh(candidate)
 
-    # Link to session if provided (skip for demo session)
-    if payload.session_id and payload.session_id != "demo":
+    # Link to session. For the special "demo" session_id, spawn a fresh
+    # per-candidate session so demo results show up in the HR dashboard.
+    if payload.session_id == "demo":
+        new_sid = f"demo-{uuid.uuid4().hex[:8]}"
+        db.add(InterviewSession(
+            session_id=new_sid,
+            status="in_progress",
+            candidate_id=candidate.id,
+            selected_criteria=json.dumps(valid_criteria, ensure_ascii=False),
+        ))
+        db.commit()
+    elif payload.session_id:
         session = db.query(InterviewSession).filter(
             InterviewSession.session_id == payload.session_id
         ).first()
@@ -489,6 +524,8 @@ async def evaluate_candidate(payload: EvaluateRequest, db: Session = Depends(get
     transcript_lines = [f"{t['role']}: {t['text']}" for t in payload.dialog]
     candidate.full_transcript = "\n".join(transcript_lines)
     candidate.evaluation_json = json.dumps(evaluation, ensure_ascii=False)
+    if not candidate.interview_finished_at:
+        candidate.interview_finished_at = datetime.utcnow()
     db.commit()
 
     # Mark the linked session as completed
@@ -509,10 +546,32 @@ def get_results(candidate_id: int, db: Session = Depends(get_db)):
         raise HTTPException(status_code=404, detail="Кандидат не найден")
     evaluation = json.loads(candidate.evaluation_json) if candidate.evaluation_json else None
     selected = json.loads(candidate.selected_criteria) if candidate.selected_criteria else ALL_CRITERIA
-    audio_paths = _parse_audio_paths(candidate.audio_path)
-    audio_urls = [
-        f"/api/candidates/{candidate_id}/recording/{i}" for i in range(len(audio_paths))
-    ]
+    # Build audio URLs: prefer DB-stored recordings (persistent), fall back to
+    # legacy disk files (may disappear after container restart).
+    db_recs = (
+        db.query(CandidateRecording)
+        .filter(CandidateRecording.candidate_id == candidate_id)
+        .order_by(CandidateRecording.recording_index)
+        .all()
+    )
+    if db_recs:
+        audio_urls = [
+            f"/api/candidates/{candidate_id}/recording/{r.recording_index}"
+            for r in db_recs
+        ]
+    else:
+        # Legacy: only include disk files that still exist
+        audio_paths = _parse_audio_paths(candidate.audio_path)
+        audio_urls = [
+            f"/api/candidates/{candidate_id}/recording/{i}"
+            for i, p in enumerate(audio_paths)
+            if Path(p).exists()
+        ]
+    started = candidate.interview_started_at
+    finished = candidate.interview_finished_at
+    duration_sec = None
+    if started and finished:
+        duration_sec = max(0, int((finished - started).total_seconds()))
     return {
         "id": candidate.id,
         "name": candidate.candidate_name,
@@ -521,7 +580,21 @@ def get_results(candidate_id: int, db: Session = Depends(get_db)):
         "transcript": candidate.full_transcript,
         "evaluation": evaluation,
         "audio_urls": audio_urls,
+        "interview_started_at": started.isoformat() if started else None,
+        "interview_finished_at": finished.isoformat() if finished else None,
+        "interview_duration_sec": duration_sec,
     }
+
+
+@app.post("/api/candidates/{candidate_id}/start")
+def mark_interview_started(candidate_id: int, db: Session = Depends(get_db)):
+    candidate = db.query(Candidate).filter(Candidate.id == candidate_id).first()
+    if not candidate:
+        raise HTTPException(status_code=404, detail="Кандидат не найден")
+    if not candidate.interview_started_at:
+        candidate.interview_started_at = datetime.utcnow()
+        db.commit()
+    return {"started_at": candidate.interview_started_at.isoformat()}
 
 
 def _parse_audio_paths(raw: Optional[str]) -> List[str]:
@@ -549,42 +622,115 @@ async def upload_recording(
     if not audio:
         raise HTTPException(status_code=400, detail="Нет аудиофайлов")
 
-    saved_paths: List[str] = []
+    # Delete any existing DB recordings for this candidate before saving new ones
+    db.query(CandidateRecording).filter(
+        CandidateRecording.candidate_id == candidate_id
+    ).delete()
+
+    saved_count = 0
     for idx, file in enumerate(audio):
         audio_bytes = await file.read()
         if not audio_bytes:
             continue
-        ext = "webm" if (file.content_type or "").startswith("audio/webm") else "ogg"
-        filename = f"candidate_{candidate_id}_{idx}.{ext}"
-        path = AUDIO_DIR / filename
-        path.write_bytes(audio_bytes)
-        saved_paths.append(str(path))
+        ct = file.content_type or "audio/webm"
+        rec = CandidateRecording(
+            candidate_id=candidate_id,
+            recording_index=idx,
+            audio_data=audio_bytes,
+            content_type=ct,
+        )
+        db.add(rec)
+        saved_count += 1
 
-    if not saved_paths:
+        # Also write to disk as fallback (best-effort, may be lost on restart)
+        ext = "webm" if ct.startswith("audio/webm") else "ogg"
+        try:
+            path = AUDIO_DIR / f"candidate_{candidate_id}_{idx}.{ext}"
+            path.write_bytes(audio_bytes)
+        except Exception:
+            pass
+
+    if saved_count == 0:
         raise HTTPException(status_code=400, detail="Пустые аудиофайлы")
 
-    candidate.audio_path = json.dumps(saved_paths, ensure_ascii=False)
     db.commit()
-    logger.info(f"Saved {len(saved_paths)} recording(s) for candidate {candidate_id}")
+    logger.info(f"Saved {saved_count} recording(s) for candidate {candidate_id} in DB")
     return {
         "status": "ok",
         "audio_urls": [
-            f"/api/candidates/{candidate_id}/recording/{i}" for i in range(len(saved_paths))
+            f"/api/candidates/{candidate_id}/recording/{i}" for i in range(saved_count)
         ],
     }
 
 
+@app.delete("/api/candidates/{candidate_id}")
+def delete_candidate(candidate_id: int, db: Session = Depends(get_db)):
+    candidate = db.query(Candidate).filter(Candidate.id == candidate_id).first()
+    if not candidate:
+        raise HTTPException(status_code=404, detail="Кандидат не найден")
+
+    # Remove DB recordings
+    db.query(CandidateRecording).filter(
+        CandidateRecording.candidate_id == candidate_id
+    ).delete()
+
+    # Remove stored audio files from disk (best-effort)
+    for path_str in _parse_audio_paths(candidate.audio_path):
+        try:
+            p = Path(path_str)
+            if p.exists():
+                p.unlink()
+        except Exception as e:
+            logger.warning(f"Failed to delete audio file {path_str}: {e}")
+
+    # Detach from any linked sessions (keep the session row, mark as removed)
+    sessions = db.query(InterviewSession).filter(
+        InterviewSession.candidate_id == candidate_id
+    ).all()
+    for s in sessions:
+        s.candidate_id = None
+        if s.session_id != "demo":
+            s.status = "removed"
+
+    db.delete(candidate)
+    db.commit()
+    logger.info(f"Deleted candidate {candidate_id}")
+    return {"status": "ok"}
+
+
 @app.get("/api/candidates/{candidate_id}/recording/{index}")
 def get_recording(candidate_id: int, index: int, db: Session = Depends(get_db)):
+    # Primary source: database (persists across container restarts)
+    rec = db.query(CandidateRecording).filter(
+        CandidateRecording.candidate_id == candidate_id,
+        CandidateRecording.recording_index == index,
+    ).first()
+    if rec:
+        return Response(
+            content=rec.audio_data,
+            media_type=rec.content_type or "audio/webm",
+            headers={"Cache-Control": "public, max-age=86400"},
+        )
+
+    # Fallback: legacy disk file (may be missing after container restart)
     candidate = db.query(Candidate).filter(Candidate.id == candidate_id).first()
     if not candidate:
         raise HTTPException(status_code=404, detail="Кандидат не найден")
     paths = _parse_audio_paths(candidate.audio_path)
-    if index < 0 or index >= len(paths):
-        raise HTTPException(status_code=404, detail="Запись не найдена")
-    audio_path = Path(paths[index])
-    if not audio_path.exists():
-        raise HTTPException(status_code=404, detail="Аудиофайл не найден на диске")
-    suffix = audio_path.suffix.lstrip(".")
-    media_type = f"audio/{suffix}" if suffix else "audio/webm"
-    return FileResponse(str(audio_path), media_type=media_type)
+    if 0 <= index < len(paths):
+        audio_path = Path(paths[index])
+        if audio_path.exists():
+            suffix = audio_path.suffix.lstrip(".")
+            media_type = f"audio/{suffix}" if suffix else "audio/webm"
+            return FileResponse(str(audio_path), media_type=media_type)
+
+    raise HTTPException(status_code=404, detail="Аудиофайл не найден")
+
+
+# ── Static frontend (production) ──────────────────────────────────────────────
+# In production the Vite dev server is not used; the built SPA is served by
+# FastAPI from frontend/dist. Keep this mount LAST so /api/* routes win.
+_FRONTEND_DIST = Path(__file__).resolve().parent.parent / "frontend" / "dist"
+if _FRONTEND_DIST.exists():
+    app.mount("/", StaticFiles(directory=str(_FRONTEND_DIST), html=True), name="frontend")
+

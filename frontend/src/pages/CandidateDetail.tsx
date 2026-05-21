@@ -1,10 +1,127 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, useRef } from "react";
 import { getResults } from "../api";
 import type { CandidateResult, Evaluation } from "../api";
+
+/**
+ * <audio> element for WebM blobs recorded via MediaRecorder.
+ *
+ * MediaRecorder produces WebM files without a duration in the header,
+ * so browsers report `duration === Infinity` and refuse to play the last
+ * ~1–2 seconds (audio appears muted near the end). The fix is a one-time
+ * seek to a huge timestamp on the first metadata load, which forces the
+ * browser to scan the file and learn the real duration. Then we reset
+ * to 0 so playback starts normally.
+ */
+function AudioPlayer({ src }: { src: string }) {
+  const ref = useRef<HTMLAudioElement | null>(null);
+  const fixedRef = useRef(false);
+  const [errored, setErrored] = useState(false);
+
+  function handleLoadedMetadata() {
+    const el = ref.current;
+    if (!el || fixedRef.current) return;
+    if (!isFinite(el.duration) || el.duration === 0) {
+      fixedRef.current = true;
+      const onSeeked = () => {
+        el.removeEventListener("seeked", onSeeked);
+        try {
+          el.currentTime = 0;
+        } catch {
+          /* ignore */
+        }
+      };
+      el.addEventListener("seeked", onSeeked);
+      try {
+        el.currentTime = 1e6;
+      } catch {
+        /* ignore */
+      }
+    } else {
+      fixedRef.current = true;
+    }
+  }
+
+  // When the audio file is missing on the server, the browser would otherwise
+  // render its own localized error UI inside the <audio> element (in Russian
+  // browsers this shows the word "Ошибка"). Hide the player and show our own
+  // friendly fallback instead.
+  if (errored) {
+    return (
+      <div className="w-full text-xs text-gray-500 italic bg-gray-50 border border-gray-200 rounded-xl px-4 py-3">
+        Аудиозапись недоступна
+      </div>
+    );
+  }
+
+  return (
+    <audio
+      ref={ref}
+      controls
+      preload="metadata"
+      className="w-full"
+      src={src}
+      onLoadedMetadata={handleLoadedMetadata}
+      onError={() => setErrored(true)}
+    />
+  );
+}
+
+function formatDateTime(iso: string | null): string {
+  if (!iso) return "—";
+  const d = new Date(iso);
+  if (isNaN(d.getTime())) return "—";
+  return d.toLocaleString("ru-RU", {
+    day: "2-digit",
+    month: "2-digit",
+    year: "numeric",
+    hour: "2-digit",
+    minute: "2-digit",
+  });
+}
+
+function formatDuration(sec: number | null): string {
+  if (sec == null) return "—";
+  const m = Math.floor(sec / 60);
+  const s = sec % 60;
+  return `${m}:${s.toString().padStart(2, "0")}`;
+}
 
 interface Props {
   candidateId: number;
   onBack: () => void;
+}
+
+function ShareButton({ candidateId }: { candidateId: number }) {
+  const [copied, setCopied] = useState(false);
+
+  async function handleShare() {
+    const url = `${window.location.origin}/?candidate=${candidateId}`;
+    try {
+      await navigator.clipboard.writeText(url);
+    } catch {
+      // Fallback: nothing — keep silent
+    }
+    setCopied(true);
+    setTimeout(() => setCopied(false), 2000);
+  }
+
+  return (
+    <button
+      onClick={handleShare}
+      title="Скопировать ссылку на результат"
+      className="ml-auto flex items-center gap-1.5 text-xs font-semibold text-blue-600 hover:text-blue-800 transition px-3 py-1.5 rounded-lg border border-blue-200 hover:border-blue-300 bg-blue-50"
+    >
+      <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+        <path
+          strokeLinecap="round"
+          strokeLinejoin="round"
+          strokeWidth={2}
+          d="M13.828 10.172a4 4 0 015.656 0l1.415 1.415a4 4 0 010 5.656l-2.829 2.828a4 4 0 01-5.656 0l-1.415-1.414M10.172 13.828a4 4 0 01-5.656 0l-1.415-1.415a4 4 0 010-5.656l2.829-2.828a4 4 0 015.656 0l1.415 1.414"
+        />
+      </svg>
+      {copied ? "Ссылка скопирована" : "Поделиться"}
+    </button>
+  );
 }
 
 interface MetricCardProps {
@@ -203,7 +320,8 @@ function EvaluationView({ evaluation, audioUrls, transcript }: {
           </p>
           <div className="space-y-6">
             {(() => {
-              // Parse transcript into client / candidate turns
+              // Parse transcript into client / candidate turns.
+              // Supports both "Клиент: ..." and "[Клиент]: ..." formats.
               const lines = (transcript || "")
                 .split("\n")
                 .map((l) => l.trim())
@@ -211,8 +329,10 @@ function EvaluationView({ evaluation, audioUrls, transcript }: {
               const clients: string[] = [];
               const candidates: string[] = [];
               for (const line of lines) {
-                const mClient = line.match(/^Клиент\s*:\s*(.*)$/i);
-                const mCand = line.match(/^(?:Кандидат|Ответ\s*\d+)\s*:\s*(.*)$/i);
+                const mClient = line.match(/^\[?\s*Клиент\s*\]?\s*:\s*(.*)$/i);
+                const mCand = line.match(
+                  /^\[?\s*(?:Кандидат|Ответ\s*\d+)\s*\]?\s*:\s*(.*)$/i
+                );
                 if (mClient) clients.push(mClient[1]);
                 else if (mCand) candidates.push(mCand[1]);
                 else candidates.push(line);
@@ -237,7 +357,7 @@ function EvaluationView({ evaluation, audioUrls, transcript }: {
                       <p className="text-xs font-semibold text-gray-500 mb-1">
                         Аудиозапись ответа кандидата
                       </p>
-                      <audio controls className="w-full" src={audioUrls[i]} />
+                      <AudioPlayer src={audioUrls[i]} />
                     </div>
                   )}
                   {/* Candidate transcript */}
@@ -290,6 +410,7 @@ export default function CandidateDetail({ candidateId, onBack }: Props) {
           <>
             <span className="text-gray-300">|</span>
             <p className="text-sm font-semibold text-gray-900">{data.name}</p>
+            <ShareButton candidateId={data.id} />
           </>
         )}
       </div>
@@ -320,6 +441,34 @@ export default function CandidateDetail({ candidateId, onBack }: Props) {
           audioUrls={data.audio_urls ?? []}
           transcript={data.transcript}
         />
+      )}
+
+      {data && (data.interview_started_at || data.interview_finished_at) && (
+        <div className="bg-white rounded-2xl border border-gray-200 p-5 mt-4 shadow-sm">
+          <p className="text-xs font-semibold text-gray-400 uppercase tracking-wide mb-3">
+            Время прохождения
+          </p>
+          <div className="grid grid-cols-3 gap-3 text-sm">
+            <div>
+              <p className="text-xs text-gray-500 mb-1">Начало</p>
+              <p className="font-semibold text-gray-800">
+                {formatDateTime(data.interview_started_at)}
+              </p>
+            </div>
+            <div>
+              <p className="text-xs text-gray-500 mb-1">Окончание</p>
+              <p className="font-semibold text-gray-800">
+                {formatDateTime(data.interview_finished_at)}
+              </p>
+            </div>
+            <div>
+              <p className="text-xs text-gray-500 mb-1">Длительность</p>
+              <p className="font-semibold text-gray-800">
+                {formatDuration(data.interview_duration_sec)}
+              </p>
+            </div>
+          </div>
+        </div>
       )}
     </div>
   );
