@@ -1,19 +1,18 @@
 import os
 import json
 import asyncio
-import aiofiles
+import tempfile
 from pathlib import Path
-from datetime import timezone
 
 from fastapi import FastAPI, UploadFile, File, Depends, HTTPException
-from fastapi.responses import FileResponse, JSONResponse
+from fastapi.responses import FileResponse
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from openai import AsyncOpenAI
 from sqlalchemy.orm import Session
 
 from config import CLIENT_PHRASES, SILENCE_MESSAGE, AUDIO_CACHE_DIR
-from database import Assessment, get_db, init_db
+from database import Assessment, Interview, get_db, init_db
 from prompts import build_evaluation_prompt
 
 app = FastAPI(title="HR Assessment API")
@@ -26,20 +25,17 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-openai_client = AsyncOpenAI(api_key=os.environ["OPENAI_API_KEY"])
+openai_client = AsyncOpenAI(
+    api_key=os.environ.get("OPENAI_API_KEY", ""),
+)
+
 YANDEX_API_KEY = os.environ.get("YANDEX_API_KEY", "")
 YANDEX_FOLDER_ID = os.environ.get("YANDEX_FOLDER_ID", "")
 
 Path(AUDIO_CACHE_DIR).mkdir(exist_ok=True)
 
 
-@app.on_event("startup")
-async def startup_event():
-    init_db()
-    await generate_audio_cache()
-
-
-async def generate_audio_cache():
+async def generate_audio_cache() -> None:
     for i, phrase in enumerate(CLIENT_PHRASES):
         audio_path = Path(AUDIO_CACHE_DIR) / f"phrase_{i}.mp3"
         if audio_path.exists():
@@ -50,10 +46,15 @@ async def generate_audio_cache():
                 voice="nova",
                 input=phrase,
             )
-            async with aiofiles.open(audio_path, "wb") as f:
-                await f.write(response.content)
+            audio_path.write_bytes(response.content)
+            print(f"Audio generated: {audio_path}")
         except Exception as e:
             print(f"Error generating audio for phrase {i}: {e}")
+
+
+@app.on_event("startup")
+async def startup_event():
+    init_db()
 
 
 @app.get("/api/healthz")
@@ -81,16 +82,72 @@ async def get_phrase_audio(phrase_index: int):
     )
 
 
+@app.post("/api/sessions")
+async def create_session(db: Session = Depends(get_db)):
+    import uuid as uuid_lib
+    session_uuid = str(uuid_lib.uuid4())
+    interview = Interview(uuid=session_uuid, status="pending")
+    db.add(interview)
+    db.commit()
+    db.refresh(interview)
+    return {"uuid": session_uuid}
+
+
+@app.get("/api/sessions")
+async def list_sessions(db: Session = Depends(get_db)):
+    interviews = db.query(Interview).order_by(Interview.created_at.desc()).all()
+    result = []
+    for iv in interviews:
+        assessment_info = None
+        if iv.assessment_id:
+            a = db.query(Assessment).filter(Assessment.id == iv.assessment_id).first()
+            if a:
+                ev = json.loads(a.evaluation_json)
+                assessment_info = {
+                    "id": a.id,
+                    "candidateName": a.candidate_name,
+                    "verdict": ev.get("verdict", ""),
+                    "createdAt": a.created_at.isoformat() if a.created_at else "",
+                }
+        result.append({
+            "uuid": iv.uuid,
+            "status": iv.status,
+            "createdAt": iv.created_at.isoformat() if iv.created_at else "",
+            "assessment": assessment_info,
+        })
+    return result
+
+
+@app.get("/api/sessions/{session_uuid}")
+async def get_session(session_uuid: str, db: Session = Depends(get_db)):
+    interview = db.query(Interview).filter(Interview.uuid == session_uuid).first()
+    if not interview:
+        raise HTTPException(status_code=404, detail="Session not found")
+    return {"uuid": interview.uuid, "status": interview.status}
+
+
 @app.post("/api/assessment/transcribe")
 async def transcribe_audio(audio: UploadFile = File(...)):
     try:
         audio_bytes = await audio.read()
 
-        transcript = await openai_client.audio.transcriptions.create(
-            model="whisper-1",
-            file=(audio.filename or "audio.webm", audio_bytes, audio.content_type or "audio/webm"),
-            language="ru",
-        )
+        # Сохраняем аудио во временный файл для корректной отправки в OpenAI
+        with tempfile.NamedTemporaryFile(delete=False, suffix=".webm") as temp_audio:
+            temp_audio.write(audio_bytes)
+            temp_path = temp_audio.name
+
+        try:
+            # Открываем файл и отправляем в Whisper
+            with open(temp_path, "rb") as audio_file:
+                transcript = await openai_client.audio.transcriptions.create(
+                    model="whisper-1",
+                    file=audio_file,
+                    language="ru",
+                )
+        finally:
+            # Обязательно удаляем временный файл, чтобы не засорять сервер
+            if os.path.exists(temp_path):
+                os.remove(temp_path)
 
         text = transcript.text.strip()
         is_empty = len(text) < 3
@@ -108,6 +165,7 @@ class DialogTurn(BaseModel):
 class EvaluateRequest(BaseModel):
     candidateName: str
     dialogue: list[DialogTurn]
+    sessionUuid: str | None = None
 
 
 async def call_yandex_gpt(prompt: str) -> str:
@@ -119,11 +177,11 @@ async def call_yandex_gpt(prompt: str) -> str:
         "Content-Type": "application/json",
     }
     body = {
-        "modelUri": f"gpt://{YANDEX_FOLDER_ID}/yandexgpt-lite",
+        "modelUri": f"gpt://{YANDEX_FOLDER_ID}/yandexgpt",
         "completionOptions": {
             "stream": False,
             "temperature": 0.1,
-            "maxTokens": 1000,
+            "maxTokens": "1000",
         },
         "messages": [
             {"role": "user", "text": prompt},
@@ -131,7 +189,9 @@ async def call_yandex_gpt(prompt: str) -> str:
     }
     async with httpx.AsyncClient(timeout=30) as client:
         response = await client.post(url, headers=headers, json=body)
-        response.raise_for_status()
+        if not response.is_success:
+            print(f"YandexGPT error {response.status_code}: {response.text}")
+            response.raise_for_status()
         data = response.json()
         return data["result"]["alternatives"][0]["message"]["text"]
 
@@ -141,7 +201,7 @@ def build_full_transcript(dialogue: list[DialogTurn]) -> str:
     for turn in dialogue:
         role_label = "Клиент" if turn.role == "client" else "Кандидат"
         lines.append(f"{role_label}: {turn.text}")
-    return "\n".join(lines)
+    return "\\n".join(lines)
 
 
 @app.post("/api/assessment/evaluate")
@@ -155,15 +215,38 @@ async def evaluate_assessment(req: EvaluateRequest, db: Session = Depends(get_db
         raw_response = raw_response.strip()
         if raw_response.startswith("```"):
             lines = raw_response.split("\n")
-            raw_response = "\n".join(lines[1:-1])
+            # strip opening fence (```json or ```) and closing fence (```)
+            lines = [l for l in lines if not l.startswith("```")]
+            raw_response = "\n".join(lines).strip()
 
-        evaluation = json.loads(raw_response)
+        print(f"[YandexGPT raw response]: {raw_response!r}")
+        raw_eval = json.loads(raw_response)
+        print(f"[YandexGPT parsed]: {raw_eval}")
 
-        required_keys = {"verdict", "markers", "quotes"}
-        if not required_keys.issubset(evaluation.keys()):
-            raise ValueError("Invalid evaluation structure from YandexGPT")
+        if "verdict" not in raw_eval:
+            raise ValueError("Missing verdict in YandexGPT response")
+
+        filler_quotes = raw_eval.get("fillerQuotes", [])
+        rudeness_quotes = raw_eval.get("rudenessQuotes", [])
+        politeness_quotes = raw_eval.get("politenessQuotes", [])
+
+        flat_quotes = (
+            [f"ПАРАЗИТ: {q}" for q in filler_quotes if q] +
+            [f"ГРУБОСТЬ: {q}" for q in rudeness_quotes if q] +
+            [f"ВЕЖЛИВОСТЬ: {q}" for q in politeness_quotes if q]
+        )
+
+        evaluation = {
+            "verdict": raw_eval["verdict"],
+            "markers": {
+                "fillerWordCount": len(filler_quotes),
+                "politenessMarkers": len(politeness_quotes),
+            },
+            "quotes": flat_quotes,
+        }
 
     except (json.JSONDecodeError, ValueError, KeyError) as e:
+        print(f"[Evaluation parse error]: {e!r}  raw={raw_response!r}")
         evaluation = {
             "verdict": "Не рекомендуется",
             "markers": {"fillerWordCount": 0, "politenessMarkers": 0},
@@ -181,6 +264,13 @@ async def evaluate_assessment(req: EvaluateRequest, db: Session = Depends(get_db
     db.commit()
     db.refresh(assessment)
 
+    if req.sessionUuid:
+        interview = db.query(Interview).filter(Interview.uuid == req.sessionUuid).first()
+        if interview:
+            interview.status = "completed"
+            interview.assessment_id = assessment.id
+            db.commit()
+
     created_at_str = assessment.created_at.isoformat() if assessment.created_at else ""
 
     return {
@@ -197,13 +287,15 @@ async def list_results(db: Session = Depends(get_db)):
     assessments = db.query(Assessment).order_by(Assessment.created_at.desc()).all()
     results = []
     for a in assessments:
-        results.append({
-            "id": a.id,
-            "candidateName": a.candidate_name,
-            "evaluation": json.loads(a.evaluation_json),
-            "fullTranscript": a.full_transcript,
-            "createdAt": a.created_at.isoformat() if a.created_at else "",
-        })
+        results.append(
+            {
+                "id": a.id,
+                "candidateName": a.candidate_name,
+                "evaluation": json.loads(a.evaluation_json),
+                "fullTranscript": a.full_transcript,
+                "createdAt": a.created_at.isoformat() if a.created_at else "",
+            }
+        )
     return results
 
 

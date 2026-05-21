@@ -1,59 +1,40 @@
-# Role Cases AI-assessor
-
-## Overview
-
-A full-stack Russian HR voice assessment MVP for contact center hiring. Candidates listen to simulated client phrases via TTS audio and record voice responses, which are transcribed via Whisper and evaluated by YandexGPT.
+# HR Voice Assessment App
 
 ## Architecture
 
-### Frontend (artifacts/hr-assessment)
-- React + TypeScript + Vite + Tailwind CSS
-- Serves at `/` (port 19570)
-- Pages: Start (`/`), Assessment (`/assessment`), Result (`/result/:id`), Results List (`/results`)
-- Uses MediaRecorder API for voice recording
-- Generated API hooks from `@workspace/api-client-react`
+- **Frontend**: React + Vite (`artifacts/hr-assessment/`) — runs at port 18664 via `artifacts/hr-stub: web` workflow
+- **Backend**: FastAPI + Python (`artifacts/hr-backend/`) — runs at port 8000 via `HR Backend` workflow
+- **API Proxy**: Vite dev server proxies `/api/*` to `http://localhost:8000`
 
-### Backend (artifacts/hr-backend)
-- Python FastAPI + SQLAlchemy (SQLite via `hr_assessments.db`)
-- Serves at `/api` (port 8080) via the api-server artifact proxy
-- **config.py** — hardcoded client phrases and silence message
-- **database.py** — SQLite setup with `Assessment` model
-- **prompts.py** — YandexGPT evaluation prompt builder
-- **main.py** — FastAPI app with all routes
+## Workflows
 
-### Proxy Routing
-- The api-server artifact (port 8080) is configured to run the Python uvicorn backend
-- All `/api` traffic is proxied to port 8080 → Python FastAPI
+| Name | Command | Port | Type |
+|------|---------|------|------|
+| `artifacts/hr-stub: web` | `pnpm install && pnpm --filter @workspace/hr-assessment run dev` | 18664 | webview |
+| `HR Backend` | `cd artifacts/hr-backend && python run.py` | 8000 | console |
 
-## API Endpoints
+## Environment Variables Required
+
+- `OPENAI_API_KEY` — for Whisper STT + TTS audio generation
+- `YANDEX_API_KEY` — for YandexGPT HR evaluation
+- `YANDEX_FOLDER_ID` — for YandexGPT model URI
+
+## Backend Details
+
+- FastAPI app in `artifacts/hr-backend/main.py`
+- SQLite database at `artifacts/hr-backend/hr_assessments.db`
+- Audio cache at `artifacts/hr-backend/audio_cache/` (pre-generated phrase_0.mp3, phrase_1.mp3)
+- Uses relative imports — must run from `artifacts/hr-backend/` directory
+
+## Key API Endpoints
+
 - `GET /api/healthz` — health check
-- `GET /api/assessment/audio/{phraseIndex}` — serve TTS audio (0 or 1)
-- `POST /api/assessment/transcribe` — Whisper STT (multipart/form-data with `audio` field)
+- `GET /api/assessment/audio/{0|1}` — TTS audio for client phrases
+- `POST /api/assessment/transcribe` — Whisper STT (multipart audio upload)
 - `POST /api/assessment/evaluate` — YandexGPT HR evaluation + DB save
-- `GET /api/assessment/results` — list all assessments
-- `GET /api/assessment/results/{id}` — get single assessment
+- `GET /api/assessment/results` — list all saved results
+- `GET /api/assessment/results/{id}` — single result
 
-## Required Secrets
-- `OPENAI_API_KEY` — OpenAI API key for Whisper STT and TTS (must be a standard OpenAI key, not OpenRouter)
-- `YANDEX_API_KEY` — YandexGPT API key
-- `YANDEX_FOLDER_ID` — Yandex Cloud folder ID
+## Artifact Registration
 
-## Assessment Flow
-1. Candidate enters their name on start screen
-2. Auto-plays client phrase 1 (TTS audio) → candidate records answer → Whisper transcribes
-3. Auto-plays client phrase 2 (TTS audio) → candidate records answer → Whisper transcribes
-4. YandexGPT evaluates full dialogue → saves to SQLite → shows HR report
-
-## Key Commands
-- `pnpm --filter @workspace/hr-assessment run dev` — run frontend dev server
-- `cd artifacts/hr-backend && uvicorn main:app --host 0.0.0.0 --port 8080 --reload` — run Python backend
-- `pnpm --filter @workspace/api-spec run codegen` — regenerate API hooks
-
-## Monorepo Stack
-- **Monorepo tool**: pnpm workspaces
-- **Node.js version**: 24
-- **Python version**: 3.11
-- **API framework**: FastAPI (Python)
-- **Database**: SQLite (Python) via SQLAlchemy
-- **Validation**: Zod (frontend), SQLAlchemy (backend)
-- **API codegen**: Orval (from OpenAPI spec)
+The frontend is registered as artifact `artifacts/hr-stub` (react-vite kind) at previewPath `/`. The actual code lives in `artifacts/hr-assessment/` — the artifact.toml in `artifacts/hr-stub/.replit-artifact/artifact.toml` points the dev/build commands to hr-assessment.
