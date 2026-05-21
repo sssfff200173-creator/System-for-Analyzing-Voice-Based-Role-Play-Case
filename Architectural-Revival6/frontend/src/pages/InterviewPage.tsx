@@ -21,9 +21,9 @@ type PhaseState =
 
 const TARGET_SAMPLE_RATE = 16000;
 
-const CASE_META: Record<string, { name: string; description: string; phraseCount: number }> = {
-  maria: { name: "Мария", description: "аффективный, эмоциональный клиент", phraseCount: 2 },
-  filipp: { name: "Филипп", description: "рационально-недовольный клиент", phraseCount: 3 },
+const CASE_META: Record<string, { name: string; phraseCount: number }> = {
+  maria: { name: "Мария", phraseCount: 2 },
+  filipp: { name: "Филипп", phraseCount: 3 },
 };
 
 const CASE_PHRASES: Record<string, string[]> = {
@@ -162,6 +162,7 @@ export default function InterviewPage({ candidate, onFinish }: Props) {
   candidateRef.current = candidate;
 
   useEffect(() => {
+    if (showCaseBriefing) return;
     setPhase("loading_audio");
     const phraseId = stepInCase + 1;
     const audio = new Audio(`/api/audio/${currentCaseKey}/${phraseId}`);
@@ -199,7 +200,7 @@ export default function InterviewPage({ candidate, onFinish }: Props) {
       audio.onended = null;
       audio.pause();
     };
-  }, [caseIndex, stepInCase]);
+  }, [caseIndex, stepInCase, showCaseBriefing]);
 
   async function processBlob(blob: Blob) {
     allWavBlobsRef.current = [...allWavBlobsRef.current, blob];

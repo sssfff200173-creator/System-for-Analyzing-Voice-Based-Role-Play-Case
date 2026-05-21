@@ -6,8 +6,12 @@ interface Props {
 function MariaBriefing() {
   return (
     <div className="bg-gray-50 rounded-2xl p-7 mb-5 border border-gray-200">
-      <p className="font-bold text-gray-900 text-sm mb-3">
+      <p className="font-bold text-gray-900 text-sm mb-1">
         Памятка для выполнения задания
+      </p>
+      <p className="text-gray-400 text-xs leading-relaxed mb-3">
+        Пожалуйста, ознакомьтесь с описанием ниже, так как вернуться к данной
+        информации при дальнейшем выполнении задания не получится
       </p>
       <p className="text-gray-800 text-base leading-relaxed">
         Вы работаете в компании-агрегаторе «Доставочка.Ру», где
@@ -25,19 +29,23 @@ function MariaBriefing() {
 function FilippBriefing() {
   return (
     <div className="bg-gray-50 rounded-2xl p-7 mb-5 border border-gray-200">
-      <p className="font-bold text-gray-900 text-sm mb-3">
+      <p className="font-bold text-gray-900 text-sm mb-1">
         Памятка для выполнения задания
       </p>
-      <p className="text-gray-800 text-base leading-relaxed mb-4">
-        Клиент обращается в голосовую поддержку с просьбой восстановить для
-        редактирования заблокированное проплаченное объявление. Голосовая
-        поддержка, где вы работаете, по правилам компании не может решить
-        вопрос пользователя в голосовом формате — просит обратиться его
-        самостоятельно в чат или на почту.
+      <p className="text-gray-400 text-xs leading-relaxed mb-3">
+        Пожалуйста, ознакомьтесь с описанием ниже, так как вернуться к данной
+        информации при дальнейшем выполнении задания не получится
       </p>
-      <div className="bg-gray-200 rounded-xl px-5 py-4 mb-4 text-center">
-        <p className="text-gray-600 text-sm font-semibold mb-1">
-          Почему не можем дать ответ в голосовой линии
+      <p className="text-gray-800 text-base leading-relaxed mb-4">
+        Вы работаете в голосовой поддержке. Клиент обращается в голосовую
+        поддержку с просьбой восстановить для редактирования заблокированное
+        проплаченное объявление о сдаче квартиры. Голосовая поддержка не может
+        решить вопрос пользователя устно и просит обратиться его самостоятельно
+        в чат или на почту.
+      </p>
+      <div className="bg-gray-200 rounded-xl px-5 py-4 mb-4">
+        <p className="text-yellow-600 text-sm font-semibold mb-1">
+          Почему не можем дать ответ в голосовой линии?
         </p>
         <p className="text-gray-500 text-sm leading-relaxed">
           Голосовая линия по данным вопросам сейчас отключена — на вопрос

@@ -21,7 +21,7 @@ from sqlalchemy.orm import Session
 
 from backend.config import CLIENT_PHRASES, CASES, WHISPER_HALLUCINATIONS
 from backend.database import Candidate, CandidateRecording, InterviewSession, get_db, init_db
-from backend.prompts import ALL_CRITERIA, build_system_prompt, build_user_message
+from backend.prompts import ALL_CRITERIA, MAIN_CRITERIA, build_system_prompt, build_user_message
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -296,133 +296,49 @@ def _safe_list(val) -> list:
     return []
 
 
-VALID_VERDICTS = {"Рекомендуется", "Частичное соответствие", "Не рекомендуется"}
-VALID_COHERENCE_LEVELS = {"несвязная", "есть нюансы", "связная"}
-VALID_SPEECH_STYLES = {"деловой", "нейтральный", "неформальный"}
-VALID_EMPATHY_LEVELS = {"высокий", "средний", "низкий"}
-VALID_INFO_CORRECTNESS = {"корректно", "частично корректно", "некорректно"}
+VALID_VERDICTS = {"Рекомендуется", "Требуется дополнительная проверка", "Не рекомендуется"}
 
 
-def _parse_evaluation(raw_json: str, selected_criteria: List[str]) -> dict:
+def _parse_new_evaluation(raw_json: str) -> dict:
     try:
         data = json.loads(raw_json)
     except json.JSONDecodeError:
         match = re.search(r"\{.*\}", raw_json, re.DOTALL)
         if match:
-            data = json.loads(match.group())
+            try:
+                data = json.loads(match.group())
+            except json.JSONDecodeError:
+                raise ValueError("Не удалось распарсить JSON от LLM")
         else:
-            raise ValueError("Не удалось распарсить JSON от Claude")
-
-    verdict = data.get("verdict", "Не рекомендуется")
-    if verdict not in VALID_VERDICTS:
-        verdict = "Не рекомендуется"
-
-    markers_raw = data.get("markers", {}) or {}
-    markers: dict = {}
-
-    if "filler_words" in selected_criteria:
-        markers["filler_words_count"] = _safe_int(markers_raw.get("filler_words_count", 0))
-        markers["filler_words_examples"] = _safe_list(markers_raw.get("filler_words_examples"))
-
-    if "rudeness" in selected_criteria:
-        markers["rudeness_count"] = _safe_int(markers_raw.get("rudeness_count", 0))
-        markers["rudeness_examples"] = _safe_list(markers_raw.get("rudeness_examples"))
-
-    if "politeness" in selected_criteria:
-        markers["politeness_count"] = _safe_int(markers_raw.get("politeness_count", 0))
-        markers["politeness_examples"] = _safe_list(markers_raw.get("politeness_examples"))
-
-    if "coherence" in selected_criteria:
-        level = markers_raw.get("coherence_level", "есть нюансы")
-        if level not in VALID_COHERENCE_LEVELS:
-            level = "есть нюансы"
-        markers["coherence_level"] = level
-        markers["coherence_issues"] = _safe_list(markers_raw.get("coherence_issues"))
-
-    if "business_style" in selected_criteria:
-        style = markers_raw.get("speech_style", "нейтральный")
-        if style not in VALID_SPEECH_STYLES:
-            style = "нейтральный"
-        markers["speech_style"] = style
-        markers["style_examples"] = _safe_list(markers_raw.get("style_examples"))
-
-    if "empathy" in selected_criteria:
-        emp = markers_raw.get("empathy_level", "средний")
-        if emp not in VALID_EMPATHY_LEVELS:
-            emp = "средний"
-        markers["empathy_level"] = emp
-        markers["empathy_examples"] = _safe_list(markers_raw.get("empathy_examples"))
-
-    if "information_correctness" in selected_criteria:
-        correctness = markers_raw.get("information_correctness", "частично корректно")
-        if correctness not in VALID_INFO_CORRECTNESS:
-            correctness = "частично корректно"
-        markers["information_correctness"] = correctness
-        markers["correctness_issues"] = _safe_list(markers_raw.get("correctness_issues"))
-
-    return {
-        "verdict": verdict,
-        "markers": markers,
-        "quotes": _safe_list(data.get("quotes")),
-        "comment": "",
-        "selected_criteria": selected_criteria,
-    }
+            raise ValueError("Не удалось распарсить JSON от LLM")
+    if not isinstance(data, dict):
+        raise ValueError("LLM вернул не объект")
+    return data
 
 
-def generate_summary(verdict: str, markers: dict, selected_criteria: List[str], filler_threshold: int) -> str:
-    if verdict == "Рекомендуется":
-        return "Все выбранные критерии пройдены успешно."
-
-    if verdict == "Не рекомендуется":
-        reasons = []
-        if "filler_words" in selected_criteria:
-            count = markers.get("filler_words_count", 0)
-            if count > filler_threshold:
-                reasons.append(
-                    f"превышен лимит слов-паразитов ({count} из {filler_threshold} допустимых)"
-                )
-        if "rudeness" in selected_criteria and markers.get("rudeness_count", 0) > 0:
-            reasons.append("зафиксирована грубость")
-        if "information_correctness" in selected_criteria and markers.get("information_correctness") == "некорректно":
-            reasons.append("предоставлена некорректная информация")
-        if "coherence" in selected_criteria and markers.get("coherence_level") == "несвязная":
-            reasons.append("несвязная речь")
-        if reasons:
-            return "Отказ: " + "; ".join(reasons) + "."
-        return "Кандидат не соответствует требованиям по выбранным критериям."
-
-    # "Частичное соответствие"
-    nuances = []
-    if "filler_words" in selected_criteria:
-        count = markers.get("filler_words_count", 0)
-        if count > 0:
-            nuances.append(f"слова-паразиты: {count} шт.")
-    if "coherence" in selected_criteria and markers.get("coherence_level") == "есть нюансы":
-        nuances.append("связность речи: есть нюансы")
-    if "business_style" in selected_criteria and markers.get("speech_style") in ("нейтральный", "неформальный"):
-        nuances.append(f"стиль общения: {markers.get('speech_style')}")
-    if "empathy" in selected_criteria and markers.get("empathy_level") in ("средний", "низкий"):
-        nuances.append(f"эмпатия: {markers.get('empathy_level')} уровень")
-    if "politeness" in selected_criteria and markers.get("politeness_count", 0) == 0:
-        nuances.append("маркеры вежливости не выявлены")
-    if nuances:
-        return "Кандидат в целом подходит, но есть нюансы: " + ", ".join(nuances) + "."
-    return "Кандидат частично соответствует требованиям."
-
-
-def _aggregate_verdict(verdicts: List[str]) -> str:
-    if all(v == "Рекомендуется" for v in verdicts):
-        return "Рекомендуется"
-    if any(v == "Не рекомендуется" for v in verdicts):
+def _calculate_verdict(
+    scores: dict,
+    filler_count: int,
+    filler_threshold: int,
+    include_filler: bool = True,
+) -> str:
+    if include_filler and filler_count > filler_threshold:
         return "Не рекомендуется"
-    return "Частичное соответствие"
+    if not scores:
+        return "Не рекомендуется"
+    if any(v == 0 for v in scores.values()):
+        return "Не рекомендуется"
+    total = sum(scores.values())
+    max_total = len(scores) * 2
+    p = (total / max_total) * 100
+    if p >= 75:
+        return "Рекомендуется"
+    elif p >= 40:
+        return "Требуется дополнительная проверка"
+    else:
+        return "Не рекомендуется"
 
 
-def generate_combined_summary(case_results: List[dict]) -> str:
-    parts = []
-    for r in case_results:
-        parts.append(f"{r['case_name']}: {r['comment']}")
-    return " | ".join(parts)
 
 
 # ── Routes ────────────────────────────────────────────────────────────────────
@@ -677,10 +593,9 @@ async def evaluate_candidate(payload: EvaluateRequest, db: Session = Depends(get
     selected_criteria = payload.selected_criteria or ALL_CRITERIA
     system_prompt = build_system_prompt(selected_criteria)
     user_text = build_user_message(
-        payload.dialog,
+        [payload.dialog],
         selected_criteria,
         filler_threshold=payload.filler_threshold,
-        fact_sheet=payload.fact_sheet,
     )
 
     import openai
@@ -715,17 +630,29 @@ async def evaluate_candidate(payload: EvaluateRequest, db: Session = Depends(get
             raise HTTPException(status_code=502, detail="Ошибка запроса к OpenRouter (Gemini + Claude)")
 
     try:
-        evaluation = _parse_evaluation(raw_text, selected_criteria)
+        llm_data = _parse_new_evaluation(raw_text)
     except Exception as e:
         logger.error(f"Failed to parse OpenRouter response: {e}\nRaw: {raw_text}")
-        raise HTTPException(status_code=502, detail="Не удалось разобрать ответ Claude")
+        raise HTTPException(status_code=502, detail="Не удалось разобрать ответ LLM")
 
-    evaluation["comment"] = generate_summary(
-        evaluation["verdict"],
-        evaluation["markers"],
-        selected_criteria,
-        payload.filler_threshold,
-    )
+    main_selected = [c for c in selected_criteria if c in MAIN_CRITERIA]
+    include_filler = "filler_words" in selected_criteria
+    case_1 = llm_data.get("case_1", {})
+    scores = {k: _safe_int(v) for k, v in case_1.get("scores", {}).items() if k in main_selected}
+    quotes = case_1.get("quotes", {})
+    filler_count = _safe_int(llm_data.get("filler_words_count", 0))
+    summary = llm_data.get("summary", "")
+    verdict = _calculate_verdict(scores, filler_count, payload.filler_threshold, include_filler)
+
+    evaluation = {
+        "verdict": verdict,
+        "scores": scores,
+        "quotes": quotes,
+        "filler_words_count": filler_count,
+        "comment": summary,
+        "selected_criteria": selected_criteria,
+        "markers": {},
+    }
 
     transcript_lines = [f"{t['role']}: {t['text']}" for t in payload.dialog]
     candidate.full_transcript = "\n".join(transcript_lines)
@@ -778,65 +705,97 @@ async def evaluate_multi(payload: EvaluateMultiRequest, db: Session = Depends(ge
 
     selected_criteria = payload.selected_criteria or ALL_CRITERIA
     system_prompt = build_system_prompt(selected_criteria)
+    main_selected = [c for c in selected_criteria if c in MAIN_CRITERIA]
+    include_filler = "filler_words" in selected_criteria
 
+    dialogs = [case_input.dialog for case_input in payload.cases]
+    user_text = build_user_message(
+        dialogs,
+        selected_criteria,
+        filler_threshold=payload.filler_threshold,
+    )
+
+    async def _chat_multi(model: str) -> str:
+        resp = await client.chat.completions.create(
+            model=model,
+            max_tokens=2000,
+            temperature=0.1,
+            messages=[
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_text},
+            ],
+        )
+        return resp.choices[0].message.content or ""
+
+    try:
+        raw_text = await _chat_multi(PRIMARY_MODEL)
+    except Exception as e:
+        logger.warning(f"Primary model {PRIMARY_MODEL} failed for multi-case: {e}. Trying fallback…")
+        try:
+            raw_text = await _chat_multi(FALLBACK_MODEL)
+        except Exception as e2:
+            logger.error(f"Fallback also failed for multi-case: {e2}")
+            raise HTTPException(status_code=502, detail="Ошибка запроса к OpenRouter (multi-case)")
+
+    try:
+        llm_data = _parse_new_evaluation(raw_text)
+    except Exception as e:
+        logger.error(f"Failed to parse multi-case response: {e}\nRaw: {raw_text}")
+        raise HTTPException(status_code=502, detail="Не удалось разобрать ответ LLM для мультикейса")
+
+    filler_count = _safe_int(llm_data.get("filler_words_count", 0))
+    summary = llm_data.get("summary", "")
+
+    all_case_scores: List[dict] = []
     case_results = []
-    for case_input in payload.cases:
+
+    for i, case_input in enumerate(payload.cases):
         case_key = case_input.case_key
         case_cfg = CASES.get(case_key, CASES["maria"])
+        case_data = llm_data.get(f"case_{i + 1}", {})
+        scores = {k: _safe_int(v) for k, v in case_data.get("scores", {}).items() if k in main_selected}
+        quotes = case_data.get("quotes", {})
+        all_case_scores.append(scores)
 
-        user_text = build_user_message(
-            case_input.dialog,
-            selected_criteria,
-            filler_threshold=payload.filler_threshold,
+        candidate_turns = [t for t in case_input.dialog if t.get("role") == "Кандидат"]
+        transcript = "\n\n".join(f"Ответ {j + 1}: {t['text']}" for j, t in enumerate(candidate_turns))
+
+        case_results.append({
+            "case_key": case_key,
+            "case_name": case_cfg["name"],
+            "case_description": case_cfg["description"],
+            "scores": scores,
+            "quotes": quotes,
+            "verdict": "",
+            "comment": "",
+            "selected_criteria": selected_criteria,
+            "markers": {},
+            "transcript": transcript,
+        })
+
+    # Min scores across cases (worst-case rule)
+    if len(all_case_scores) >= 2:
+        all_keys = set(all_case_scores[0]) | set(all_case_scores[1])
+        min_scores = {k: min(all_case_scores[0].get(k, 2), all_case_scores[1].get(k, 2)) for k in all_keys}
+    elif all_case_scores:
+        min_scores = all_case_scores[0]
+    else:
+        min_scores = {}
+
+    effective_threshold = payload.filler_threshold * len(payload.cases)
+    overall_verdict = _calculate_verdict(min_scores, filler_count, effective_threshold, include_filler)
+
+    for i, case_result in enumerate(case_results):
+        case_result["verdict"] = _calculate_verdict(
+            all_case_scores[i], filler_count, payload.filler_threshold, include_filler
         )
-
-        async def _chat_multi(model: str, _user_text: str = user_text) -> str:
-            resp = await client.chat.completions.create(
-                model=model,
-                max_tokens=1500,
-                temperature=0.1,
-                messages=[
-                    {"role": "system", "content": system_prompt},
-                    {"role": "user", "content": _user_text},
-                ],
-            )
-            return resp.choices[0].message.content or ""
-
-        try:
-            raw_text = await _chat_multi(PRIMARY_MODEL)
-        except Exception as e:
-            logger.warning(f"Primary model {PRIMARY_MODEL} failed for case {case_key}: {e}. Trying fallback…")
-            try:
-                raw_text = await _chat_multi(FALLBACK_MODEL)
-            except Exception as e2:
-                logger.error(f"Fallback also failed for case {case_key}: {e2}")
-                raise HTTPException(status_code=502, detail=f"Ошибка запроса к OpenRouter для кейса {case_key}")
-
-        try:
-            evaluation = _parse_evaluation(raw_text, selected_criteria)
-        except Exception as e:
-            logger.error(f"Failed to parse response for case {case_key}: {e}\nRaw: {raw_text}")
-            raise HTTPException(status_code=502, detail=f"Не удалось разобрать ответ Claude для кейса {case_key}")
-
-        evaluation["comment"] = generate_summary(
-            evaluation["verdict"],
-            evaluation["markers"],
-            selected_criteria,
-            payload.filler_threshold,
-        )
-        evaluation["case_key"] = case_key
-        evaluation["case_name"] = case_cfg["name"]
-        evaluation["case_description"] = case_cfg["description"]
-        case_results.append(evaluation)
-
-    overall_verdict = _aggregate_verdict([r["verdict"] for r in case_results])
-    combined_comment = generate_combined_summary(case_results)
 
     evaluation_json = {
         "is_multi_case": True,
         "verdict": overall_verdict,
-        "comment": combined_comment,
-        "combined_comment": combined_comment,
+        "comment": summary,
+        "combined_comment": summary,
+        "filler_words_count": filler_count,
         "cases": case_results,
         "selected_criteria": selected_criteria,
     }
@@ -860,7 +819,7 @@ async def evaluate_multi(payload: EvaluateMultiRequest, db: Session = Depends(ge
     return {
         "candidate_id": candidate.id,
         "evaluations": case_results,
-        "combined_comment": combined_comment,
+        "combined_comment": summary,
     }
 
 
@@ -907,6 +866,8 @@ def get_results(candidate_id: int, db: Session = Depends(get_db)):
         "evaluation": None if is_multi else evaluation,
         "evaluations": evaluation.get("cases") if is_multi else None,
         "combined_comment": evaluation.get("combined_comment") if is_multi else None,
+        "overall_verdict": evaluation.get("verdict") if is_multi else None,
+        "filler_words_count": evaluation.get("filler_words_count") if is_multi else None,
         "audio_urls": audio_urls,
         "interview_started_at": started.isoformat() if started else None,
         "interview_finished_at": finished.isoformat() if finished else None,

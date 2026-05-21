@@ -4,19 +4,24 @@ import { createSession, getSessions, getResults, deleteCandidate } from "../api"
 import CandidateDetail from "./CandidateDetail";
 
 const CRITERION_LABEL: Record<string, string> = {
+  speech_quality: "Качество речи",
+  ethics_and_respect: "Деловая этика",
+  engagement_and_solution: "Вовлечённость и подход",
+  emotional_stability: "Эмоц. стабильность",
   filler_words: "Слова-паразиты",
-  rudeness: "Грубость",
-  politeness: "Вежливость",
-  coherence: "Связность речи",
-  business_style: "Деловой стиль",
-  empathy: "Эмпатия",
-  information_correctness: "Корректность информации",
 };
+
+const MAIN_CRITERIA_KEYS = [
+  "speech_quality",
+  "ethics_and_respect",
+  "engagement_and_solution",
+  "emotional_stability",
+];
 
 function verdictStyle(verdict: string | null): { border: string; badge: string } {
   if (verdict === "Рекомендуется")
     return { border: "border-green-300 hover:border-green-400", badge: "bg-green-100 text-green-700" };
-  if (verdict === "Частичное соответствие")
+  if (verdict === "Требуется дополнительная проверка" || verdict === "Частичное соответствие")
     return { border: "border-yellow-300 hover:border-yellow-400", badge: "bg-yellow-100 text-yellow-700" };
   return { border: "border-red-300 hover:border-red-400", badge: "bg-red-100 text-red-700" };
 }
@@ -66,12 +71,11 @@ function formatDate(iso: string | null): string {
 }
 
 const ALL_CRITERIA_OPTIONS = [
+  { key: "speech_quality", label: "Качество речи" },
+  { key: "ethics_and_respect", label: "Деловая этика" },
+  { key: "engagement_and_solution", label: "Вовлечённость" },
+  { key: "emotional_stability", label: "Эмоц. стабильность" },
   { key: "filler_words", label: "Слова-паразиты" },
-  { key: "rudeness", label: "Грубость" },
-  { key: "politeness", label: "Вежливость" },
-  { key: "coherence", label: "Связность речи" },
-  { key: "business_style", label: "Деловой стиль" },
-  { key: "empathy", label: "Эмпатия" },
 ];
 
 type VerdictFilter = "all" | "rec" | "partial" | "notrec";
@@ -84,7 +88,7 @@ export default function HRDashboard() {
   const [copied, setCopied] = useState(false);
   const [selectedCandidateId, setSelectedCandidateId] = useState<number | null>(null);
   const [selectedCriteria, setSelectedCriteria] = useState<string[]>(
-    ["filler_words", "rudeness", "politeness", "coherence"]
+    ["speech_quality", "ethics_and_respect", "engagement_and_solution", "emotional_stability", "filler_words"]
   );
   const [selectedCases, setSelectedCases] = useState<string[]>(["maria"]);
   const [fillerThreshold, setFillerThreshold] = useState(2);
@@ -121,8 +125,10 @@ export default function HRDashboard() {
     );
   }
 
+  const hasMainCriteria = selectedCriteria.some(k => MAIN_CRITERIA_KEYS.includes(k));
+
   async function handleGenerate() {
-    if (selectedCriteria.length === 0 || selectedCases.length === 0) return;
+    if (!hasMainCriteria || selectedCases.length === 0) return;
     setGenerating(true);
     try {
       const { session_id } = await createSession(selectedCriteria, fillerThreshold, selectedCases);
@@ -182,11 +188,10 @@ export default function HRDashboard() {
         "Дата интервью",
         "Вердикт",
         "Слова-паразиты (кол-во)",
-        "Грубость (кол-во)",
-        "Вежливость (кол-во)",
-        "Связность речи",
-        "Деловой стиль",
-        "Эмпатия",
+        "Качество речи (0-2)",
+        "Деловая этика (0-2)",
+        "Вовлечённость (0-2)",
+        "Эмоц. стабильность (0-2)",
         "Критерии",
         "Комментарий",
       ];
@@ -195,23 +200,23 @@ export default function HRDashboard() {
       for (const { session, result } of detailed) {
         const c = session.candidate!;
         const ev = result?.evaluation;
-        const m = ev?.markers;
         const sc = result?.selected_criteria ?? [];
         const selected = sc.map((k) => CRITERION_LABEL[k] ?? k);
         const dateStr = c.created_at
           ? new Date(c.created_at).toLocaleString("ru-RU")
           : "";
+        const scores = ev?.scores ?? {};
+        const fillerCount = ev?.filler_words_count ?? (ev?.markers as Record<string,number> | undefined)?.["filler_words_count"];
         rows.push([
           c.name,
           c.phone,
           dateStr,
           c.verdict ?? "",
-          m && sc.includes("filler_words") ? String(m.filler_words_count ?? "") : "",
-          m && sc.includes("rudeness") ? String(m.rudeness_count ?? "") : "",
-          m && sc.includes("politeness") ? String(m.politeness_count ?? "") : "",
-          m && sc.includes("coherence") ? (m.coherence_level ?? "") : "",
-          m && sc.includes("business_style") ? (m.speech_style ?? "") : "",
-          m && sc.includes("empathy") ? (m.empathy_level ?? "") : "",
+          sc.includes("filler_words") ? String(fillerCount ?? "") : "",
+          sc.includes("speech_quality") ? String(scores["speech_quality"] ?? "") : "",
+          sc.includes("ethics_and_respect") ? String(scores["ethics_and_respect"] ?? "") : "",
+          sc.includes("engagement_and_solution") ? String(scores["engagement_and_solution"] ?? "") : "",
+          sc.includes("emotional_stability") ? String(scores["emotional_stability"] ?? "") : "",
           selected.join(", "),
           ev?.comment ?? c.comment ?? "",
         ]);
@@ -237,7 +242,7 @@ export default function HRDashboard() {
     const c = s.candidate;
     if (!c) return false;
     if (verdictFilter === "rec" && c.verdict !== "Рекомендуется") return false;
-    if (verdictFilter === "partial" && c.verdict !== "Частичное соответствие") return false;
+    if (verdictFilter === "partial" && c.verdict !== "Частичное соответствие" && c.verdict !== "Требуется дополнительная проверка") return false;
     if (verdictFilter === "notrec" && c.verdict !== "Не рекомендуется") return false;
     if (normalizedQuery) {
       const nameMatch = c.name.toLowerCase().includes(normalizedQuery);
@@ -299,8 +304,8 @@ export default function HRDashboard() {
         <p className="text-xs text-gray-500 mb-2">Кейсы для кандидата:</p>
         <div className="grid grid-cols-2 gap-2 mb-4">
           {[
-            { key: "maria", label: "Кейс 1: Мария", sub: "эмоциональный клиент" },
-            { key: "filipp", label: "Кейс 2: Филипп", sub: "рациональный клиент" },
+            { key: "maria", label: "Кейс 1: Мария", sub: "аффективный, эмоциональный клиент" },
+            { key: "filipp", label: "Кейс 2: Филипп", sub: "рационально-недовольный клиент" },
           ].map(({ key, label, sub }) => {
             const checked = selectedCases.includes(key);
             return (
@@ -403,13 +408,13 @@ export default function HRDashboard() {
           </div>
         )}
 
-        {selectedCriteria.length === 0 && (
-          <p className="text-xs text-red-500 mb-3">Выберите хотя бы один критерий</p>
+        {!hasMainCriteria && (
+          <p className="text-xs text-red-500 mb-3">Выберите хотя бы один основной критерий оценки</p>
         )}
 
         <button
           onClick={handleGenerate}
-          disabled={generating || selectedCriteria.length === 0}
+          disabled={generating || !hasMainCriteria}
           className="w-full bg-accent hover:bg-accent-hover text-gray-900 font-bold py-3 rounded-xl text-sm transition active:scale-95 disabled:opacity-60"
         >
           {generating ? "Генерация…" : "Сгенерировать ссылку для кандидата"}
@@ -420,9 +425,23 @@ export default function HRDashboard() {
               <p className="text-xs text-gray-600 flex-1 truncate font-mono">{generatedLink}</p>
               <button
                 onClick={handleCopy}
-                className="text-xs font-semibold text-blue-600 flex-shrink-0 hover:text-blue-800 transition"
+                className={`flex-shrink-0 flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-sm font-bold transition ${
+                  copied
+                    ? "bg-green-100 text-green-700 border border-green-300"
+                    : "bg-accent hover:bg-accent-hover text-gray-900 border border-accent shadow-sm"
+                }`}
               >
-                {copied ? "✓ Скопировано" : "Копировать"}
+                {copied ? (
+                  <>✓ Скопировано</>
+                ) : (
+                  <>
+                    <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2}
+                        d="M8 16H6a2 2 0 01-2-2V6a2 2 0 012-2h8a2 2 0 012 2v2m-6 12h8a2 2 0 002-2v-8a2 2 0 00-2-2h-8a2 2 0 00-2 2v8a2 2 0 002 2z" />
+                    </svg>
+                    Скопировать
+                  </>
+                )}
               </button>
             </div>
           </div>
@@ -503,7 +522,7 @@ export default function HRDashboard() {
               >
                 <option value="all">Все результаты</option>
                 <option value="rec">Рекомендуется</option>
-                <option value="partial">Частичное соответствие</option>
+                <option value="partial">Требует проверки</option>
                 <option value="notrec">Не рекомендуется</option>
               </select>
               <svg

@@ -2,6 +2,13 @@ import { useState, useEffect, useRef } from "react";
 import { getResults } from "../api";
 import type { CandidateResult, CaseEvaluation, Evaluation, Markers } from "../api";
 
+const CRITERION_DISPLAY_NAMES: Record<string, string> = {
+  speech_quality: "Качество речи",
+  ethics_and_respect: "Деловая этика",
+  engagement_and_solution: "Вовлечённость и подход",
+  emotional_stability: "Эмоц. стабильность",
+};
+
 function AudioPlayer({ src }: { src: string }) {
   const ref = useRef<HTMLAudioElement | null>(null);
   const fixedRef = useRef(false);
@@ -86,6 +93,30 @@ function ShareButton({ candidateId }: { candidateId: number }) {
       </svg>
       {copied ? "Ссылка скопирована" : "Поделиться"}
     </button>
+  );
+}
+
+function scoreStyle(score: number): { border: string; badge: string; label: string } {
+  if (score === 2) return { border: "border-green-400", badge: "bg-green-100 text-green-700", label: "2 / 2" };
+  if (score === 1) return { border: "border-yellow-400", badge: "bg-yellow-100 text-yellow-700", label: "1 / 2" };
+  return { border: "border-red-400", badge: "bg-red-100 text-red-700", label: "0 / 2" };
+}
+
+function ScoreCard({ criterionKey, score, quote }: { criterionKey: string; score: number; quote?: string }) {
+  const name = CRITERION_DISPLAY_NAMES[criterionKey] ?? criterionKey;
+  const { border, badge, label } = scoreStyle(score);
+  return (
+    <div className={`bg-white rounded-2xl border-2 ${border} p-5`}>
+      <div className="flex items-center justify-between mb-2">
+        <p className="font-semibold text-gray-800 text-sm">{name}</p>
+        <span className={`text-lg font-bold px-3 py-1 rounded-xl ${badge}`}>{label}</span>
+      </div>
+      {quote ? (
+        <p className="text-xs text-gray-600 bg-gray-50 rounded-lg px-3 py-2 mt-1">«{quote}»</p>
+      ) : score === 2 ? (
+        <p className="text-xs text-gray-400 italic">Нарушений не выявлено</p>
+      ) : null}
+    </div>
   );
 }
 
@@ -174,23 +205,6 @@ function LevelCard({ title, level, examples = [], issues = [], goodValues, badVa
   );
 }
 
-function QuotesBlock({ title, quotes }: { title: string; quotes: string[] }) {
-  return (
-    <div className="bg-white rounded-2xl border border-gray-200 p-5 shadow-sm">
-      <p className="text-xs font-semibold text-gray-400 uppercase tracking-wide mb-3">{title}</p>
-      {quotes.length > 0 ? (
-        <ul className="space-y-2">
-          {quotes.map((q, i) => (
-            <li key={i} className="text-sm text-gray-700 bg-gray-50 rounded-xl px-4 py-3">«{q}»</li>
-          ))}
-        </ul>
-      ) : (
-        <p className="text-xs text-gray-400 italic">Нет цитат для данного маркера</p>
-      )}
-    </div>
-  );
-}
-
 function verdictConfig(verdict: string) {
   if (verdict === "Рекомендуется") {
     return {
@@ -205,7 +219,7 @@ function verdictConfig(verdict: string) {
       body: "text-green-700",
     };
   }
-  if (verdict === "Частичное соответствие") {
+  if (verdict === "Требуется дополнительная проверка" || verdict === "Частичное соответствие") {
     return {
       wrap: "bg-yellow-50 border-2 border-yellow-400",
       icon: "bg-yellow-100",
@@ -231,14 +245,33 @@ function verdictConfig(verdict: string) {
   };
 }
 
+function FillerWordsBlock({ count, selected }: { count: number; selected: string[] }) {
+  if (!selected.includes("filler_words")) return null;
+  const isOver = count > 0;
+  return (
+    <div className={`bg-white rounded-2xl border-2 ${isOver ? "border-red-400" : "border-gray-200"} p-5`}>
+      <div className="flex items-center justify-between">
+        <p className="font-semibold text-gray-800 text-sm">Слова-паразиты</p>
+        <span className={`text-2xl font-bold px-3 py-1 rounded-xl ${isOver ? "bg-red-100 text-red-700" : "bg-gray-100 text-gray-500"}`}>
+          {count}
+        </span>
+      </div>
+      {count === 0 && (
+        <p className="text-xs text-gray-400 italic mt-2">Слова-паразиты не обнаружены</p>
+      )}
+    </div>
+  );
+}
+
 function EvaluationView({ evaluation, audioUrls, transcript }: {
   evaluation: Evaluation;
   audioUrls: string[];
   transcript: string | null;
 }) {
   const selected = evaluation.selected_criteria ?? [];
-  const m: Markers = evaluation.markers;
   const vc = verdictConfig(evaluation.verdict);
+  const isNewFormat = evaluation.scores && Object.keys(evaluation.scores).length > 0;
+  const m: Markers = evaluation.markers ?? {};
 
   const showFiller = selected.includes("filler_words");
   const showRudeness = selected.includes("rudeness");
@@ -248,9 +281,13 @@ function EvaluationView({ evaluation, audioUrls, transcript }: {
   const showEmpathy = selected.includes("empathy");
   const showInfoCorrectness = selected.includes("information_correctness");
 
+  const quotes = evaluation.quotes ?? {};
+  const quotesDict = Array.isArray(quotes) ? {} : (quotes as Record<string, string>);
+  const quotesArr = Array.isArray(quotes) ? (quotes as string[]) : [];
+  const fillerCount = evaluation.filler_words_count ?? (m as Record<string, number>)?.filler_words_count ?? 0;
+
   return (
     <>
-      {/* Verdict banner */}
       <div className={`rounded-2xl p-5 mb-4 flex items-start gap-4 ${vc.wrap}`}>
         <div className={`flex-shrink-0 w-12 h-12 rounded-full flex items-center justify-center ${vc.icon}`}>
           {vc.svg}
@@ -263,77 +300,95 @@ function EvaluationView({ evaluation, audioUrls, transcript }: {
         </div>
       </div>
 
-      {/* Metric cards */}
       <div className="space-y-3 mb-4">
-        {showFiller && (
-          <MetricCard
-            title="Слова-паразиты"
-            count={m.filler_words_count ?? 0}
-            examples={m.filler_words_examples ?? []}
-            positive={false}
-          />
-        )}
-        {showRudeness && (
-          <MetricCard
-            title="Грубость / Негатив"
-            count={m.rudeness_count ?? 0}
-            examples={m.rudeness_examples ?? []}
-            positive={false}
-          />
-        )}
-        {showPoliteness && (
-          <MetricCard
-            title="Вежливость"
-            count={m.politeness_count ?? 0}
-            examples={m.politeness_examples ?? []}
-            positive={true}
-          />
-        )}
-        {showCoherence && (
-          <LevelCard
-            title="Связность речи"
-            level={m.coherence_level ?? (m.coherence_score != null
-              ? (m.coherence_score >= 8 ? "связная" : m.coherence_score >= 5 ? "есть нюансы" : "несвязная")
-              : "есть нюансы")}
-            issues={m.coherence_issues ?? []}
-            goodValues={["связная"]}
-            badValues={["несвязная"]}
-          />
-        )}
-        {showStyle && m.speech_style && (
-          <LevelCard
-            title="Деловой стиль общения"
-            level={m.speech_style}
-            examples={m.style_examples ?? []}
-            goodValues={["деловой"]}
-            badValues={["неформальный"]}
-            noIssuesText="Примеры не найдены"
-          />
-        )}
-        {showEmpathy && m.empathy_level && (
-          <LevelCard
-            title="Эмпатия и индивидуальный подход"
-            level={m.empathy_level}
-            examples={m.empathy_examples ?? []}
-            goodValues={["высокий"]}
-            badValues={["низкий"]}
-            noIssuesText="Примеры не найдены"
-          />
-        )}
-        {showInfoCorrectness && m.information_correctness && (
-          <LevelCard
-            title="Корректность информации"
-            level={m.information_correctness}
-            issues={m.correctness_issues ?? []}
-            goodValues={["корректно"]}
-            badValues={["некорректно"]}
-          />
+        {isNewFormat ? (
+          <>
+            {Object.entries(evaluation.scores!).map(([key, score]) => (
+              <ScoreCard
+                key={key}
+                criterionKey={key}
+                score={score}
+                quote={quotesDict[key]}
+              />
+            ))}
+            <FillerWordsBlock count={fillerCount} selected={selected} />
+          </>
+        ) : (
+          <>
+            {showFiller && (
+              <MetricCard
+                title="Слова-паразиты"
+                count={(m as Record<string, number>).filler_words_count ?? 0}
+                examples={(m as Record<string, string[]>).filler_words_examples ?? []}
+                positive={false}
+              />
+            )}
+            {showRudeness && (
+              <MetricCard
+                title="Грубость / Негатив"
+                count={(m as Record<string, number>).rudeness_count ?? 0}
+                examples={(m as Record<string, string[]>).rudeness_examples ?? []}
+                positive={false}
+              />
+            )}
+            {showPoliteness && (
+              <MetricCard
+                title="Вежливость"
+                count={(m as Record<string, number>).politeness_count ?? 0}
+                examples={(m as Record<string, string[]>).politeness_examples ?? []}
+                positive={true}
+              />
+            )}
+            {showCoherence && (
+              <LevelCard
+                title="Связность речи"
+                level={(m as Record<string, string>).coherence_level ?? "есть нюансы"}
+                issues={(m as Record<string, string[]>).coherence_issues ?? []}
+                goodValues={["связная"]}
+                badValues={["несвязная"]}
+              />
+            )}
+            {showStyle && (m as Record<string, string>).speech_style && (
+              <LevelCard
+                title="Деловой стиль общения"
+                level={(m as Record<string, string>).speech_style}
+                examples={(m as Record<string, string[]>).style_examples ?? []}
+                goodValues={["деловой"]}
+                badValues={["неформальный"]}
+                noIssuesText="Примеры не найдены"
+              />
+            )}
+            {showEmpathy && (m as Record<string, string>).empathy_level && (
+              <LevelCard
+                title="Эмпатия и индивидуальный подход"
+                level={(m as Record<string, string>).empathy_level}
+                examples={(m as Record<string, string[]>).empathy_examples ?? []}
+                goodValues={["высокий"]}
+                badValues={["низкий"]}
+                noIssuesText="Примеры не найдены"
+              />
+            )}
+            {showInfoCorrectness && (m as Record<string, string>).information_correctness && (
+              <LevelCard
+                title="Корректность информации"
+                level={(m as Record<string, string>).information_correctness}
+                issues={(m as Record<string, string[]>).correctness_issues ?? []}
+                goodValues={["корректно"]}
+                badValues={["некорректно"]}
+              />
+            )}
+          </>
         )}
       </div>
 
-      {evaluation.quotes.length > 0 && (
-        <div className="mb-4">
-          <QuotesBlock title="Ключевые цитаты" quotes={evaluation.quotes} />
+      {quotesArr.length > 0 && (
+        <div className="mb-4 bg-white rounded-2xl border border-gray-200 p-5 shadow-sm">
+          <p className="text-xs font-semibold text-gray-400 uppercase tracking-wide mb-3">Ключевые цитаты</p>
+          <ul className="space-y-2">
+            {quotesArr.map((q, i) => (
+              <li key={i} className="text-sm text-gray-700 bg-gray-50 rounded-xl px-4 py-3">«{q}»</li>
+            ))}
+          </ul>
         </div>
       )}
 
@@ -386,46 +441,72 @@ function EvaluationView({ evaluation, audioUrls, transcript }: {
   );
 }
 
+const ORDINAL_LABELS = ["Первый кейс", "Второй кейс", "Третий кейс"];
+
 function MultiCaseEvaluationView({
   evaluations,
   combinedComment,
   audioUrls,
-  transcript,
+  overallVerdict,
+  fillerCount,
 }: {
   evaluations: CaseEvaluation[];
   combinedComment: string | null;
   audioUrls: string[];
-  transcript: string | null;
+  overallVerdict?: string | null;
+  fillerCount?: number;
 }) {
+  const vc = overallVerdict ? verdictConfig(overallVerdict) : null;
+  const selected = evaluations[0]?.selected_criteria ?? [];
+
   return (
     <>
+      {vc && (
+        <div className={`rounded-2xl p-5 mb-4 flex items-start gap-4 ${vc.wrap}`}>
+          <div className={`flex-shrink-0 w-12 h-12 rounded-full flex items-center justify-center ${vc.icon}`}>
+            {vc.svg}
+          </div>
+          <div className="min-w-0">
+            <p className={`text-xs font-semibold uppercase tracking-widest mb-0.5 ${vc.title} opacity-60`}>Итоговый вердикт</p>
+            <p className={`text-lg font-bold ${vc.title}`}>{overallVerdict}</p>
+          </div>
+        </div>
+      )}
+
       {combinedComment && (
         <div className="bg-gray-900 text-white rounded-2xl p-5 mb-4">
           <p className="text-xs font-semibold text-gray-400 uppercase tracking-wide mb-2">
-            Итоговый вывод по двум кейсам
+            Итоговое резюме
           </p>
           <p className="text-sm leading-relaxed">{combinedComment}</p>
         </div>
       )}
+
+      {fillerCount !== undefined && selected.includes("filler_words") && (
+        <div className="mb-4">
+          <FillerWordsBlock count={fillerCount} selected={selected} />
+        </div>
+      )}
+
       {evaluations.map((ev, i) => {
         const casePhraseCount = ev.case_key === "filipp" ? 3 : 2;
         const startIdx = i === 0 ? 0 : evaluations.slice(0, i).reduce((acc, e) => acc + (e.case_key === "filipp" ? 3 : 2), 0);
         const caseAudioUrls = audioUrls.slice(startIdx, startIdx + casePhraseCount);
+        const caseLabel = ORDINAL_LABELS[i] ?? `Кейс ${i + 1}`;
         return (
           <div key={ev.case_key} className="mb-6">
             <div className="flex items-center gap-3 mb-3">
               <div className="w-9 h-9 rounded-full flex items-center justify-center text-sm font-bold text-gray-900 bg-accent">
-                {ev.case_name.slice(0, 2)}
+                {i + 1}
               </div>
               <div>
-                <p className="font-semibold text-gray-900 text-sm">{ev.case_name}</p>
-                <p className="text-xs text-gray-400">{ev.case_description}</p>
+                <p className="font-semibold text-gray-900 text-sm">{caseLabel}</p>
               </div>
             </div>
             <EvaluationView
               evaluation={ev}
               audioUrls={caseAudioUrls}
-              transcript={null}
+              transcript={ev.transcript ?? null}
             />
             {i < evaluations.length - 1 && (
               <div className="border-t border-gray-200 my-6" />
@@ -433,14 +514,6 @@ function MultiCaseEvaluationView({
           </div>
         );
       })}
-      {transcript && (
-        <div className="bg-white rounded-2xl border border-gray-200 p-5 mt-2 shadow-sm">
-          <p className="text-xs font-semibold text-gray-400 uppercase tracking-wide mb-3">
-            Полная транскрипция
-          </p>
-          <p className="text-sm text-gray-700 whitespace-pre-wrap leading-relaxed">{transcript}</p>
-        </div>
-      )}
     </>
   );
 }
@@ -492,18 +565,13 @@ export default function CandidateDetail({ candidateId, onBack }: Props) {
         </div>
       )}
 
-      {data && !data.evaluation && (
-        <div className="bg-yellow-50 border border-yellow-200 rounded-2xl p-5 text-yellow-800 text-sm">
-          Результаты ещё не готовы. Кандидат не завершил интервью.
-        </div>
-      )}
-
       {data && data.evaluations && data.evaluations.length > 0 && (
         <MultiCaseEvaluationView
           evaluations={data.evaluations}
           combinedComment={data.combined_comment}
           audioUrls={data.audio_urls ?? []}
-          transcript={data.transcript}
+          overallVerdict={data.overall_verdict}
+          fillerCount={data.filler_words_count ?? undefined}
         />
       )}
 

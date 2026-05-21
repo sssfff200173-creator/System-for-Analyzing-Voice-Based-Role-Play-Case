@@ -37,12 +37,18 @@ export interface Markers {
   correctness_issues?: string[];
 }
 
-export type Verdict = "Рекомендуется" | "Частичное соответствие" | "Не рекомендуется";
+export type Verdict =
+  | "Рекомендуется"
+  | "Требуется дополнительная проверка"
+  | "Частичное соответствие"
+  | "Не рекомендуется";
 
 export interface Evaluation {
   verdict: Verdict;
   markers: Markers;
-  quotes: string[];
+  scores?: Record<string, number>;
+  quotes: string[] | Record<string, string>;
+  filler_words_count?: number;
   comment: string;
   selected_criteria: string[];
 }
@@ -51,6 +57,7 @@ export interface CaseEvaluation extends Evaluation {
   case_key: string;
   case_name: string;
   case_description: string;
+  transcript?: string | null;
 }
 
 export interface EvaluateResponse {
@@ -190,6 +197,8 @@ export interface CandidateResult {
   evaluation: Evaluation | null;
   evaluations: CaseEvaluation[] | null;
   combined_comment: string | null;
+  overall_verdict: string | null;
+  filler_words_count: number | null;
   audio_urls: string[];
   interview_started_at: string | null;
   interview_finished_at: string | null;

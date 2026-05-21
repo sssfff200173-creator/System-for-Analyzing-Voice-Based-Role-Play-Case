@@ -173,11 +173,11 @@ export default function ResultPage({ candidate, evaluation, transcript, onRestar
       </div>
 
       {/* Quotes */}
-      {evaluation.quotes.length > 0 && (
+      {Array.isArray(evaluation.quotes) && evaluation.quotes.length > 0 && (
         <div className="bg-white rounded-2xl border border-gray-200 p-5 mb-6 shadow-sm">
           <p className="text-xs font-semibold text-gray-400 uppercase tracking-wide mb-3">Цитаты кандидата</p>
           <ul className="space-y-2">
-            {evaluation.quotes.map((q, i) => (
+            {(evaluation.quotes as string[]).map((q, i) => (
               <li key={i} className="text-sm text-gray-700 bg-gray-50 rounded-xl px-4 py-3">
                 «{q}»
               </li>
