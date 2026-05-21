@@ -1,25 +1,64 @@
 interface Props {
   onReady: () => void;
+  caseKey?: string;
 }
 
-export default function BriefingPage({ onReady }: Props) {
+function MariaBriefing() {
+  return (
+    <div className="bg-gray-50 rounded-2xl p-7 mb-5 border border-gray-200">
+      <p className="font-bold text-gray-900 text-sm mb-3">
+        Памятка для выполнения задания
+      </p>
+      <p className="text-gray-800 text-base leading-relaxed">
+        Вы работаете в компании-агрегаторе «Доставочка.Ру», где
+        предусмотрена отправка заказов курьерской службой, а также в пункты
+        выдачи. При заказе товара через пункт выдачи по правилам нашей
+        организации необходимо осмотреть товар, и, в случае обнаружения
+        дефектов, оформить возврат. После получения товара из пункта
+        выдачи, вернуть заказ уже не получится, единственный вариант —
+        связаться напрямую с продавцом-поставщиком товара.
+      </p>
+    </div>
+  );
+}
+
+function FilippBriefing() {
+  return (
+    <div className="bg-gray-50 rounded-2xl p-7 mb-5 border border-gray-200">
+      <p className="font-bold text-gray-900 text-sm mb-3">
+        Памятка для выполнения задания
+      </p>
+      <p className="text-gray-800 text-base leading-relaxed mb-4">
+        Клиент обращается в голосовую поддержку с просьбой восстановить для
+        редактирования заблокированное проплаченное объявление. Голосовая
+        поддержка, где вы работаете, по правилам компании не может решить
+        вопрос пользователя в голосовом формате — просит обратиться его
+        самостоятельно в чат или на почту.
+      </p>
+      <div className="bg-gray-200 rounded-xl px-5 py-4 mb-4 text-center">
+        <p className="text-gray-600 text-sm font-semibold mb-1">
+          Почему не можем дать ответ в голосовой линии
+        </p>
+        <p className="text-gray-500 text-sm leading-relaxed">
+          Голосовая линия по данным вопросам сейчас отключена — на вопрос
+          смогут ответить и помочь в течение рабочего дня в письменном канале.
+        </p>
+      </div>
+      <p className="text-gray-800 text-base leading-relaxed">
+        Пользователь негативно реагирует на просьбу написать самостоятельно.
+        Настаивает на том, чтобы вопрос решили в голосе, и требует компенсацию
+        за простой. Также пользователь крайне негативно указывает на то, что
+        причина блокировки написана непонятно, — хочет, чтобы писали подробно.
+      </p>
+    </div>
+  );
+}
+
+export default function BriefingPage({ onReady, caseKey }: Props) {
   return (
     <div className="flex items-center justify-center min-h-screen p-4 bg-gray-50">
       <div className="bg-white rounded-2xl shadow-lg w-full max-w-[652px] p-10">
-        <div className="bg-gray-50 rounded-2xl p-7 mb-5 border border-gray-200">
-          <p className="font-bold text-gray-900 text-sm mb-3">
-            Памятка для выполнения задания
-          </p>
-          <p className="text-gray-800 text-base leading-relaxed">
-            Вы работаете в компании-агрегаторе «Доставочка.Ру», где
-            предусмотрена отправка заказов курьерской службой, а также в пункты
-            выдачи. При заказе товара через пункт выдачи по правилам нашей
-            организации необходимо осмотреть товар, и, в случае обнаружения
-            дефектов, оформить возврат. После получения товара из пункта
-            выдачи, вернуть заказ уже не получится, единственный вариант —
-            связаться напрямую с продавцом-поставщиком товара.
-          </p>
-        </div>
+        {caseKey === "filipp" ? <FilippBriefing /> : <MariaBriefing />}
 
         <p className="text-gray-700 text-sm leading-relaxed mb-6">
           Клиент задаст несколько вопросов, на каждый из которых Вы сможете

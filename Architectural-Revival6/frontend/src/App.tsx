@@ -68,6 +68,7 @@ export default function App() {
       )}
       {screen === "briefing" && candidate && (
         <BriefingPage
+          caseKey={candidate.selected_cases?.[0] ?? "maria"}
           onReady={() => {
             markInterviewStarted(candidate.id);
             setScreen("interview");

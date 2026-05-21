@@ -143,31 +143,31 @@ export default function ResultPage({ candidate, evaluation, transcript, onRestar
         {showFiller && (
           <MetricCard
             title="Слова-паразиты"
-            count={evaluation.markers.filler_words_count}
-            examples={evaluation.markers.filler_words_examples}
+            count={evaluation.markers.filler_words_count ?? 0}
+            examples={evaluation.markers.filler_words_examples ?? []}
             positive={false}
           />
         )}
         {showRudeness && (
           <MetricCard
             title="Грубость"
-            count={evaluation.markers.rudeness_count}
-            examples={evaluation.markers.rudeness_examples}
+            count={evaluation.markers.rudeness_count ?? 0}
+            examples={evaluation.markers.rudeness_examples ?? []}
             positive={false}
           />
         )}
         {showPoliteness && (
           <MetricCard
             title="Вежливость"
-            count={evaluation.markers.politeness_count}
-            examples={evaluation.markers.politeness_examples}
+            count={evaluation.markers.politeness_count ?? 0}
+            examples={evaluation.markers.politeness_examples ?? []}
             positive={true}
           />
         )}
         {showCoherence && (
           <CoherenceCard
-            score={evaluation.markers.coherence_score}
-            issues={evaluation.markers.coherence_issues}
+            score={evaluation.markers.coherence_score ?? 0}
+            issues={evaluation.markers.coherence_issues ?? []}
           />
         )}
       </div>

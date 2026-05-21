@@ -155,6 +155,144 @@ function ConsentText() {
   );
 }
 
+function PrivacyPolicyText() {
+  return (
+    <div className="space-y-4">
+      <p>
+        Настоящая Политика конфиденциальности и обработки персональных данных (далее — Политика)
+        определяет порядок обработки и защиты персональных данных пользователей проекта
+        «Role Cases AI-Assessor» (далее — Сервис), осуществляемой Оператором — Бондарчук София
+        Алексеевна, г. Москва, Российская Федерация, e-mail:{" "}
+        <a href="mailto:role_cases_assessor.sup@mail.ru" className="text-blue-600 underline hover:text-blue-800">
+          role_cases_assessor.sup@mail.ru
+        </a>
+        .
+      </p>
+      <p>
+        Используя Сервис и предоставляя свои данные, Вы подтверждаете согласие с условиями
+        настоящей Политики и Согласия на обработку персональных данных, в случае несогласия с
+        этими условиями Вы должны воздержаться от использования сервиса «Role Cases AI-Assessor».
+      </p>
+
+      <div>
+        <p className="font-semibold mb-1">Общие положения</p>
+        <p className="font-semibold mb-1">1. В рамках Политики под вашей персональной информацией (Пользователя) понимаются:</p>
+        <p className="mb-2">
+          1.1. Персональная информация, которую Вы предоставляете о себе самостоятельно в процессе
+          использования Сервиса, включая Ваши персональные данные. Обязательная для предоставления
+          Сервиса информация помечена специальным образом.
+        </p>
+        <p>
+          1.2. Настоящая Политика конфиденциальности применяется только к сайту Role Cases AI-Assessor.
+          Сайт Сервиса не контролирует и не несет ответственности за сайты третьих лиц, на которые
+          Пользователь может перейти по ссылкам, доступным на Сайте Role Cases AI-Assessor.
+        </p>
+      </div>
+
+      <div>
+        <p className="font-semibold mb-1">Цели обработки персональных данных</p>
+        <p className="mb-2">
+          2.1 В рамках работы Сервиса обрабатывается только необходимая для работы Сервиса
+          персональная информация, а именно следующие персональные данные пользователя:
+        </p>
+        <ul className="list-disc list-inside space-y-0.5 ml-2 mb-2">
+          <li>имя и фамилия;</li>
+          <li>номер телефона;</li>
+          <li>текстовые сообщения и ответы;</li>
+          <li>аудиозаписи, голосовые сообщения и голосовые ответы;</li>
+          <li>техническая информация о подключении к сайту, включая IP-адрес, cookie, данные браузера и устройства.</li>
+        </ul>
+        <p className="mb-2">2.2 Вы предоставляете данные добровольно.</p>
+        <p className="mb-2">
+          2.3 Основанием для обработки ваших персональных данных в этом процессе является согласие
+          на обработку персональных данных. Обрабатываемые в рамках указанной цели персональные
+          данные не относятся к специальным категориям или биометрическим в соответствии со ст. 10
+          и 11 152-ФЗ.
+        </p>
+        <p className="mb-2">
+          2.4 Ваши персональные данные будут уничтожены в течение 30 дней с момента получения
+          отзыва согласия на обработку персональных данных в соответствии с ч. 4–5 ст. 21 152-ФЗ.
+        </p>
+        <p className="mb-1">2.5 Персональные данные обрабатываются исключительно для следующих целей:</p>
+        <ul className="list-disc list-inside space-y-0.5 ml-2 mb-2">
+          <li>обеспечение работы дипломного проекта (сервиса «Role Cases AI-Assessor»);</li>
+          <li>проведение и анализ голосовых кейсов и интервью;</li>
+          <li>проведение исследований и демонстрация результатов проекта в учебных целях;</li>
+          <li>обеспечение безопасности и стабильной работы сайта.</li>
+        </ul>
+        <p>
+          2.6 Аудиозаписи и голосовые данные используются только в рамках работы проекта
+          «Role Cases AI-Assessor» и не предназначены для идентификации личности пользователя.
+        </p>
+      </div>
+
+      <div>
+        <p className="font-semibold mb-1">Передача персональных данных</p>
+        <p className="mb-2">
+          3.1 Персональные данные не передаются третьим лицам, за исключением случаев:
+        </p>
+        <ul className="list-disc list-inside space-y-0.5 ml-2 mb-2">
+          <li>получения согласия пользователя;</li>
+          <li>требований законодательства Российской Федерации;</li>
+          <li>необходимости технического обеспечения работы Сервиса;</li>
+          <li>передачи (предоставления доступа) компаниям-партнерам (потенциальным работодателям), инициировавшим тестирование.</li>
+        </ul>
+        <p className="mb-2">
+          3.2 Оператор обеспечивает первичный сбор, запись, систематизацию, накопление, хранение,
+          уточнение (обновление, изменение) и извлечение персональных данных граждан Российской
+          Федерации с использованием баз данных, находящихся на территории Российской Федерации.
+        </p>
+        <p className="mb-2">
+          3.3 Оператор вправе осуществлять трансграничную передачу персональных данных на
+          территории иностранных государств (с использованием зарубежных ИТ-инфраструктур и
+          облачных сервисов для автоматизированного анализа) при наличии соответствующего согласия
+          пользователя.
+        </p>
+        <p className="mb-1">3.4 Персональные данные хранятся только в течение срока, необходимого для достижения целей обработки. Данные удаляются или уничтожаются:</p>
+        <ul className="list-disc list-inside space-y-0.5 ml-2 mb-2">
+          <li>после достижения целей обработки;</li>
+          <li>при отзыве согласия пользователем;</li>
+          <li>при прекращении работы проекта.</li>
+        </ul>
+        <p className="mb-2">
+          3.5 Удаление персональных данных осуществляется в течение 30 дней с момента получения
+          запроса пользователя или прекращения обработки данных.
+        </p>
+        <p>
+          3.6 Оператор принимает необходимые организационные и технические меры для защиты
+          персональных данных от неправомерного доступа, изменения, распространения, удаления или
+          иных неправомерных действий.
+        </p>
+      </div>
+
+      <div>
+        <p className="font-semibold mb-1">Права Пользователей и изменение Политики</p>
+        <p className="mb-1">4.1 Вы имеете право:</p>
+        <ul className="list-disc list-inside space-y-0.5 ml-2 mb-2">
+          <li>получать информацию об обработке своих персональных данных;</li>
+          <li>требовать уточнения, блокировки или удаления данных;</li>
+          <li>отозвать согласие на обработку персональных данных;</li>
+          <li>обратиться с вопросами по обработке данных по контактам, указанным на сайте проекта.</li>
+        </ul>
+        <p className="mb-2">
+          4.2 Оператор вправе вносить изменения в настоящую Политику. Актуальная версия Политики
+          размещается на сайте проекта «Role Cases AI-Assessor».
+        </p>
+        <p className="mb-2">
+          4.3 Продолжение использования Сервиса после публикации новой редакции Политики означает
+          согласие пользователя с внесёнными изменениями.
+        </p>
+        <p>
+          4.4 По вопросам обработки персональных данных Вы можете обратиться по электронной почте:{" "}
+          <a href="mailto:role_cases_assessor.sup@mail.ru" className="text-blue-600 underline hover:text-blue-800">
+            role_cases_assessor.sup@mail.ru
+          </a>
+        </p>
+      </div>
+    </div>
+  );
+}
+
 const PHONE_MIN_DIGITS = 10;
 const PHONE_MAX_DIGITS = 15;
 
@@ -181,8 +319,7 @@ export default function StartPage({ onRegistered, sessionId }: Props) {
   const [phone, setPhone] = useState("");
   const [consent, setConsent] = useState(false);
   const [privacyConsent, setPrivacyConsent] = useState(false);
-  const [showConsentModal, setShowConsentModal] = useState(false);
-  const [showPrivacyModal, setShowPrivacyModal] = useState(false);
+  const [showConsentModal, setShowConsentModal] = useState<"consent" | "privacy" | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
 
@@ -231,29 +368,29 @@ export default function StartPage({ onRegistered, sessionId }: Props) {
 
   return (
     <>
-      {showConsentModal && (
+      {showConsentModal === "consent" && (
         <ConsentModal
           title="Согласие на обработку персональных данных"
-          onClose={() => setShowConsentModal(false)}
+          onClose={() => setShowConsentModal(null)}
           onAccept={() => {
             setConsent(true);
-            setShowConsentModal(false);
+            setShowConsentModal(null);
           }}
         >
           <ConsentText />
         </ConsentModal>
       )}
 
-      {showPrivacyModal && (
+      {showConsentModal === "privacy" && (
         <ConsentModal
           title="Политика конфиденциальности"
-          onClose={() => setShowPrivacyModal(false)}
+          onClose={() => setShowConsentModal(null)}
           onAccept={() => {
             setPrivacyConsent(true);
-            setShowPrivacyModal(false);
+            setShowConsentModal(null);
           }}
         >
-          <p>Текст политики конфиденциальности.</p>
+          <PrivacyPolicyText />
         </ConsentModal>
       )}
 
@@ -317,7 +454,7 @@ export default function StartPage({ onRegistered, sessionId }: Props) {
                     type="button"
                     onClick={(e) => {
                       e.stopPropagation();
-                      setShowConsentModal(true);
+                      setShowConsentModal("consent");
                     }}
                     className="text-blue-600 underline hover:text-blue-800 transition"
                   >
@@ -336,16 +473,16 @@ export default function StartPage({ onRegistered, sessionId }: Props) {
                   className="w-5 h-5 mt-0.5 rounded accent-yellow-400 cursor-pointer flex-shrink-0"
                 />
                 <span className="text-sm text-gray-600 leading-snug">
-                  Я согласен(а) с{" "}
+                  Я подтверждаю, что ознакомлен и согласен с{" "}
                   <button
                     type="button"
                     onClick={(e) => {
                       e.stopPropagation();
-                      setShowPrivacyModal(true);
+                      setShowConsentModal("privacy");
                     }}
                     className="text-blue-600 underline hover:text-blue-800 transition"
                   >
-                    политикой конфиденциальности
+                    Политикой конфиденциальности
                   </button>
                   .{" "}
                   <span className="text-red-500">*</span>

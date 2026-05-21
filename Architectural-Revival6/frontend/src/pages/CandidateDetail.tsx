@@ -408,7 +408,6 @@ function MultiCaseEvaluationView({
         </div>
       )}
       {evaluations.map((ev, i) => {
-        const vc = verdictConfig(ev.verdict);
         const casePhraseCount = ev.case_key === "filipp" ? 3 : 2;
         const startIdx = i === 0 ? 0 : evaluations.slice(0, i).reduce((acc, e) => acc + (e.case_key === "filipp" ? 3 : 2), 0);
         const caseAudioUrls = audioUrls.slice(startIdx, startIdx + casePhraseCount);

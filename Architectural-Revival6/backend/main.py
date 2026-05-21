@@ -189,25 +189,33 @@ def _seed_data():
 
 # ── TTS (Yandex SpeechKit) ────────────────────────────────────────────────────
 
-async def _generate_phrase_audio_yandex(phrase: str, voice: str = "jane", emotion: Optional[str] = "evil") -> bytes:
+async def _generate_phrase_audio_yandex(phrase: str, voice: str = "jane", emotion: Optional[str] = "evil", speed: Optional[float] = None) -> bytes:
     yandex_key = os.getenv("YANDEX_API_KEY")
     folder_id = os.getenv("YANDEX_FOLDER_ID")
     headers = {"Authorization": f"Api-Key {yandex_key}"}
+    is_ssml = phrase.strip().startswith("<speak>")
     data: dict = {
-        "text": phrase,
         "lang": "ru-RU",
         "voice": voice,
         "format": "mp3",
         "folderId": folder_id,
     }
-    if emotion:
-        data["emotion"] = emotion
+    if is_ssml:
+        data["ssml"] = phrase
+    else:
+        data["text"] = phrase
+        if emotion:
+            data["emotion"] = emotion
+    if speed is not None:
+        data["speed"] = str(speed)
     async with httpx.AsyncClient(timeout=30) as client:
         response = await client.post(
             "https://tts.api.cloud.yandex.net/speech/v1/tts:synthesize",
             headers=headers,
             data=data,
         )
+        if response.status_code != 200:
+            logger.error(f"Yandex TTS error {response.status_code}: {response.text}")
         response.raise_for_status()
         return response.content
 
@@ -221,6 +229,7 @@ async def _ensure_tts_audio():
     for case_key, case_cfg in CASES.items():
         voice = case_cfg["voice"]
         emotion = case_cfg.get("emotion")
+        speeds = case_cfg.get("speed", [])
         for idx, phrase in enumerate(case_cfg["phrases"], start=1):
             if case_key == "maria":
                 audio_path = AUDIO_DIR / f"phrase_{idx}.mp3"
@@ -229,9 +238,10 @@ async def _ensure_tts_audio():
             if audio_path.exists():
                 logger.info(f"TTS audio {audio_path.name} already cached")
                 continue
+            phrase_speed = speeds[idx - 1] if isinstance(speeds, list) and idx - 1 < len(speeds) else (speeds if isinstance(speeds, float) else None)
             try:
                 logger.info(f"Generating TTS for {case_key} phrase {idx} via Yandex SpeechKit…")
-                audio_bytes = await _generate_phrase_audio_yandex(phrase, voice=voice, emotion=emotion)
+                audio_bytes = await _generate_phrase_audio_yandex(phrase, voice=voice, emotion=emotion, speed=phrase_speed)
                 audio_path.write_bytes(audio_bytes)
                 logger.info(f"TTS {audio_path.name} saved")
             except Exception as e:
@@ -679,9 +689,12 @@ async def evaluate_candidate(payload: EvaluateRequest, db: Session = Depends(get
         base_url="https://openrouter.ai/api/v1",
     )
 
-    try:
-        response = await client.chat.completions.create(
-            model="anthropic/claude-haiku-4-5",
+    PRIMARY_MODEL = "anthropic/claude-sonnet-4-5"
+    FALLBACK_MODEL = "google/gemini-2.5-flash"
+
+    async def _chat(model: str) -> str:
+        resp = await client.chat.completions.create(
+            model=model,
             max_tokens=1500,
             temperature=0.1,
             messages=[
@@ -689,10 +702,17 @@ async def evaluate_candidate(payload: EvaluateRequest, db: Session = Depends(get
                 {"role": "user", "content": user_text},
             ],
         )
-        raw_text = response.choices[0].message.content or ""
+        return resp.choices[0].message.content or ""
+
+    try:
+        raw_text = await _chat(PRIMARY_MODEL)
     except Exception as e:
-        logger.error(f"OpenRouter evaluation request failed: {e}")
-        raise HTTPException(status_code=502, detail="Ошибка запроса к OpenRouter Claude")
+        logger.warning(f"Primary model {PRIMARY_MODEL} failed: {e}. Trying fallback {FALLBACK_MODEL}…")
+        try:
+            raw_text = await _chat(FALLBACK_MODEL)
+        except Exception as e2:
+            logger.error(f"Fallback model {FALLBACK_MODEL} also failed: {e2}")
+            raise HTTPException(status_code=502, detail="Ошибка запроса к OpenRouter (Gemini + Claude)")
 
     try:
         evaluation = _parse_evaluation(raw_text, selected_criteria)
@@ -753,6 +773,9 @@ async def evaluate_multi(payload: EvaluateMultiRequest, db: Session = Depends(ge
         base_url="https://openrouter.ai/api/v1",
     )
 
+    PRIMARY_MODEL = "anthropic/claude-sonnet-4-5"
+    FALLBACK_MODEL = "google/gemini-2.5-flash"
+
     selected_criteria = payload.selected_criteria or ALL_CRITERIA
     system_prompt = build_system_prompt(selected_criteria)
 
@@ -767,20 +790,27 @@ async def evaluate_multi(payload: EvaluateMultiRequest, db: Session = Depends(ge
             filler_threshold=payload.filler_threshold,
         )
 
-        try:
-            response = await client.chat.completions.create(
-                model="anthropic/claude-haiku-4-5",
+        async def _chat_multi(model: str, _user_text: str = user_text) -> str:
+            resp = await client.chat.completions.create(
+                model=model,
                 max_tokens=1500,
                 temperature=0.1,
                 messages=[
                     {"role": "system", "content": system_prompt},
-                    {"role": "user", "content": user_text},
+                    {"role": "user", "content": _user_text},
                 ],
             )
-            raw_text = response.choices[0].message.content or ""
+            return resp.choices[0].message.content or ""
+
+        try:
+            raw_text = await _chat_multi(PRIMARY_MODEL)
         except Exception as e:
-            logger.error(f"OpenRouter evaluation failed for case {case_key}: {e}")
-            raise HTTPException(status_code=502, detail=f"Ошибка запроса к OpenRouter для кейса {case_key}")
+            logger.warning(f"Primary model {PRIMARY_MODEL} failed for case {case_key}: {e}. Trying fallback…")
+            try:
+                raw_text = await _chat_multi(FALLBACK_MODEL)
+            except Exception as e2:
+                logger.error(f"Fallback also failed for case {case_key}: {e2}")
+                raise HTTPException(status_code=502, detail=f"Ошибка запроса к OpenRouter для кейса {case_key}")
 
         try:
             evaluation = _parse_evaluation(raw_text, selected_criteria)

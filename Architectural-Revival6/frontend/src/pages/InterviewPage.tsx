@@ -2,6 +2,7 @@ import { useState, useRef, useEffect } from "react";
 import { transcribeAudio, evaluateCandidate, evaluateMulti, uploadRecording } from "../api";
 import type { Evaluation, DialogTurn } from "../api";
 import type { CandidateInfo } from "../App";
+import BriefingPage from "./BriefingPage";
 
 interface Props {
   candidate: CandidateInfo;
@@ -102,6 +103,7 @@ export default function InterviewPage({ candidate, onFinish }: Props) {
   const [caseIndex, setCaseIndex] = useState(0);
   const [stepInCase, setStepInCase] = useState(0);
   const [phase, setPhase] = useState<PhaseState>("loading_audio");
+  const [showCaseBriefing, setShowCaseBriefing] = useState(false);
   const [errorMsg, setErrorMsg] = useState("");
   const [elapsedSec, setElapsedSec] = useState(0);
   const timerIntervalRef = useRef<number | null>(null);
@@ -226,6 +228,7 @@ export default function InterviewPage({ candidate, onFinish }: Props) {
           stepInCaseRef.current = 0;
           setCaseIndex(nextCaseIndex);
           setStepInCase(0);
+          setShowCaseBriefing(true);
         } else {
           setPhase("evaluating");
           await doEvaluate();
@@ -343,6 +346,15 @@ export default function InterviewPage({ candidate, onFinish }: Props) {
   const initials = currentCaseMeta.name.slice(0, 2).toUpperCase();
   const isTwoCase = selectedCases.length > 1;
 
+  if (showCaseBriefing) {
+    return (
+      <BriefingPage
+        caseKey={currentCaseKey}
+        onReady={() => setShowCaseBriefing(false)}
+      />
+    );
+  }
+
   return (
     <div className="flex flex-col items-center justify-between min-h-screen p-6 max-w-sm mx-auto">
 
@@ -377,10 +389,7 @@ export default function InterviewPage({ candidate, onFinish }: Props) {
         </div>
 
         <div className="text-center">
-          <p className="font-semibold text-gray-900 text-lg">{currentCaseMeta.name}</p>
-          {isTwoCase && (
-            <p className="text-xs text-gray-400 mt-0.5">{currentCaseMeta.description}</p>
-          )}
+          <p className="font-semibold text-gray-900 text-lg">Клиент {currentCaseMeta.name}</p>
           <p className="text-sm text-gray-500 mt-1">{STATUS_TEXT[phase]}</p>
         </div>
 

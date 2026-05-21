@@ -3,11 +3,16 @@ from sqlalchemy import create_engine, Column, Integer, String, Text, DateTime, L
 from sqlalchemy.orm import declarative_base, sessionmaker
 from datetime import datetime
 
-DATABASE_URL = os.getenv("DATABASE_URL", "sqlite:///./hr_assessor.db")
+_raw_url = os.getenv("DATABASE_URL", "sqlite:///./hr_assessor.db")
+# SQLAlchemy requires "postgresql://" not "postgres://" (older Heroku/Replit format)
+if _raw_url.startswith("postgres://"):
+    _raw_url = _raw_url.replace("postgres://", "postgresql://", 1)
+DATABASE_URL = _raw_url
 
 engine = create_engine(
     DATABASE_URL,
     connect_args={"check_same_thread": False} if DATABASE_URL.startswith("sqlite") else {},
+    pool_pre_ping=True,
 )
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 Base = declarative_base()
