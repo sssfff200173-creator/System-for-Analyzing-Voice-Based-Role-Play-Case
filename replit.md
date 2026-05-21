@@ -1,78 +1,65 @@
 # Role Cases AI-ассистент — HR Voice Assessment
 
-## Обзор
+Приложение для голосовой оценки кандидатов контакт-центра: кандидат слышит аудио с репликами «клиента», отвечает вслух, система транскрибирует и оценивает речь по заданным HR критериям.
 
-Full-stack приложение для голосовой оценки кандидатов контакт-центра.
+## Run & Operate
 
-## Стек
+| Команда | Что делает |
+|---------|-----------|
+| HR Backend workflow | `python -m uvicorn backend.main:app --host 0.0.0.0 --port 8000 --reload` |
+| HR Frontend workflow | `cd frontend && npm run dev` (порт 5000) |
 
-| Слой | Технология |
-|------|-----------|
-| Frontend | React 18 + TypeScript + Vite + Tailwind CSS |
-| Backend | Python 3.12 + FastAPI + Uvicorn |
-| БД | PostgreSQL (SQLAlchemy, DATABASE_URL из env) |
-| STT | OpenAI Whisper API |
-| TTS | OpenAI TTS API (голос nova) |
-| Оценка | YandexGPT API |
+- Required env: `OPENAI_API_KEY` — Whisper STT + TTS + GPT-4o-mini evaluation
+- Optional env: `DATABASE_URL` — PostgreSQL (по умолчанию SQLite `hr_assessor.db`)
 
-## Структура
+## Stack
+
+- Backend: Python 3.12 + FastAPI + Uvicorn + SQLAlchemy (SQLite/Postgres)
+- Frontend: React 18 + TypeScript + Vite + Tailwind CSS
+- STT/TTS: OpenAI Whisper + TTS API (голос nova)
+- Оценка: GPT-4o-mini (JSON-режим)
+
+## Where things live
 
 ```
 backend/
-  main.py       — FastAPI-приложение, все эндпоинты
-  config.py     — фразы клиента + список Whisper-галлюцинаций
-  database.py   — SQLAlchemy модель Candidate (включая audio_path)
-  prompts.py    — динамическая генерация системного промпта для YandexGPT
-  audio/        — кешированные TTS mp3-файлы + записи кандидатов
+  main.py      — FastAPI, все эндпоинты
+  config.py    — фразы клиента + Whisper-галлюцинации
+  database.py  — SQLAlchemy модели: Candidate, CandidateRecording, InterviewSession
+  prompts.py   — динамический системный промпт для GPT
+  audio/       — кешированные TTS mp3 + записи кандидатов
 frontend/
   src/
-    App.tsx                       — роутинг между экранами
-    api.ts                        — fetch-обёртки для всех эндпоинтов
-    pages/StartPage.tsx           — имя, телефон, 3 критерия, согласие
-    pages/InterviewPage.tsx       — воспроизведение аудио + запись + upload
-    pages/ResultPage.tsx          — итоговый отчёт (вид кандидата)
-    pages/HRDashboard.tsx         — список сессий, кликабельные кандидаты
-    pages/CandidateDetail.tsx     — детальная аналитика HR (плашка, аудио, KPI, цитаты, транскрипт)
-start.sh        — запускает backend (port 8000) + frontend dev (port 5000)
+    App.tsx                  — роутинг по параметрам URL
+    api.ts                   — fetch-обёртки
+    pages/StartPage.tsx      — форма регистрации кандидата
+    pages/PreparationPage.tsx
+    pages/BriefingPage.tsx
+    pages/InterviewPage.tsx  — запись + воспроизведение аудио
+    pages/CandidateThanks.tsx
+    pages/HRDashboard.tsx    — список сессий (без ?id)
+    pages/CandidateDetail.tsx— детальная аналитика кандидата (?candidate=N)
+    pages/ResultPage.tsx
 ```
 
-## Запуск
+## Architecture decisions
 
-```
-sh start.sh
-```
+- Фронтенд проксирует `/api` → `localhost:8000` через Vite proxy (dev-режим)
+- SQLite по умолчанию — можно переключить на PostgreSQL через `DATABASE_URL`
+- TTS-аудио кешируется на диск при первом старте (нужен `OPENAI_API_KEY`)
+- Оценка через GPT-4o-mini (JSON-режим), а не YandexGPT — упрощает интеграцию
+- CandidateRecording хранит аудио-blob в БД (персистентно между перезапусками)
 
-- Backend: http://localhost:8000
-- Frontend: http://localhost:5000 (Vite proxy /api → backend)
+## Product
 
-## Переменные окружения
+- HR создаёт ссылку на сессию (`/?id=<session_id>`), отправляет кандидату
+- Кандидат проходит интервью: слышит фразы клиента, отвечает вслух
+- После завершения HR видит оценку в дашборде (`/` без параметров)
+- Дашборд показывает вердикт, маркеры (слова-паразиты, грубость, вежливость, связность), цитаты
 
-| Переменная | Описание |
-|-----------|---------|
-| `OPENAI_API_KEY` | Whisper STT + TTS |
-| `YANDEX_API_KEY` | YandexGPT |
-| `YANDEX_FOLDER_ID` | ID папки Yandex Cloud |
-| `DATABASE_URL` | PostgreSQL (или sqlite:///./hr_assessor.db) |
+## Gotchas
 
-## API эндпоинты
-
-| Метод | Путь | Описание |
-|-------|------|---------|
-| POST | /api/sessions | Создать сессию, вернуть session_id |
-| GET | /api/sessions | Список всех сессий с кандидатами (включая candidate.id) |
-| POST | /api/candidates | Создать кандидата (имя, телефон, согласие, критерии) |
-| GET | /api/audio/{1\|2} | TTS-аудио клиентских фраз |
-| POST | /api/transcribe | Whisper STT (multipart audio) |
-| POST | /api/evaluate | YandexGPT оценка + сохранение в БД |
-| GET | /api/results/{id} | Результаты по кандидату (включая audio_url) |
-| POST | /api/candidates/{id}/recording | Сохранить аудиозапись кандидата на диск |
-| GET | /api/candidates/{id}/recording | Получить аудиозапись кандидата |
-
-## Ключевые особенности
-
-- **Стартовый экран**: имя, телефон, согласие на ПД, 3 чекбокса критериев (все включены по умолчанию)
-- **Whisper-фильтр**: при пустом тексте / галлюцинациях — ошибка "Вас не было слышно" + кнопка повтора
-- **Динамический промпт**: YandexGPT оценивает только выбранные критерии
-- **Результаты**: скрывает карточки невыбранных критериев; пустые счётчики строго = 0
-
-
+- Без `OPENAI_API_KEY` TTS-аудио не генерируется, транскрипция и оценка не работают
+- Воркфлоу "HR Frontend" — основной webview (порт 5000)
+- Воркфлоу "HR Backend" — console, порт 8000
+- БД инициализируется автоматически при старте, включая миграции ALTER TABLE

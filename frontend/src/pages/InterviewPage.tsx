@@ -19,10 +19,9 @@ type PhaseState =
   | "error";
 
 const TOTAL_STEPS = 2;
-
 const CLIENT_NAME = "Клиент";
+const TARGET_SAMPLE_RATE = 16000;
 
-// Must match backend/config.py CLIENT_PHRASES exactly
 const CLIENT_PHRASES = [
   "Алё, здравствуйте! Я вчера покупала у вас телефон, забрала его из пункта выдачи. А когда пришла домой и открыла — поняла, что там огромная царапина на весь экран! Пришла сегодня снова в пункт выдачи, хотела вернуть, а его видите ли не принимают! В ваших правилах вообще ничего не понятно! Что мне теперь делать с этим дурацким телефоном!",
   "Я уже третий раз звоню вам! Вы вообще ничего не можете решить! Для чего вы там сидите!",
@@ -38,6 +37,62 @@ const STATUS_TEXT: Record<PhaseState, string> = {
   evaluating: "Анализируем результаты…",
   error: "Ошибка",
 };
+
+// ── WAV helpers ────────────────────────────────────────────────────────────────
+
+function downsample(buffer: Float32Array, fromRate: number, toRate: number): Float32Array {
+  if (fromRate === toRate) return buffer;
+  const ratio = fromRate / toRate;
+  const newLength = Math.round(buffer.length / ratio);
+  const result = new Float32Array(newLength);
+  for (let i = 0; i < newLength; i++) {
+    result[i] = buffer[Math.round(i * ratio)];
+  }
+  return result;
+}
+
+function encodeWav(samples: Float32Array, sampleRate: number): Blob {
+  const int16 = new Int16Array(samples.length);
+  for (let i = 0; i < samples.length; i++) {
+    const s = Math.max(-1, Math.min(1, samples[i]));
+    int16[i] = s < 0 ? s * 0x8000 : s * 0x7fff;
+  }
+
+  const dataBytes = int16.byteLength;
+  const buffer = new ArrayBuffer(44 + dataBytes);
+  const view = new DataView(buffer);
+
+  const str = (offset: number, s: string) => {
+    for (let i = 0; i < s.length; i++) view.setUint8(offset + i, s.charCodeAt(i));
+  };
+
+  str(0, "RIFF");
+  view.setUint32(4, 36 + dataBytes, true);
+  str(8, "WAVE");
+  str(12, "fmt ");
+  view.setUint32(16, 16, true);
+  view.setUint16(20, 1, true);
+  view.setUint16(22, 1, true);
+  view.setUint32(24, sampleRate, true);
+  view.setUint32(28, sampleRate * 2, true);
+  view.setUint16(32, 2, true);
+  view.setUint16(34, 16, true);
+  str(36, "data");
+  view.setUint32(40, dataBytes, true);
+
+  new Int16Array(buffer, 44).set(int16);
+  return new Blob([buffer], { type: "audio/wav" });
+}
+
+// ── Component ──────────────────────────────────────────────────────────────────
+
+interface WavRecorder {
+  audioContext: AudioContext;
+  processor: ScriptProcessorNode;
+  stream: MediaStream;
+  source: MediaStreamAudioSourceNode;
+  samples: Float32Array[];
+}
 
 export default function InterviewPage({ candidate, onFinish }: Props) {
   const [step, setStep] = useState(0);
@@ -67,7 +122,6 @@ export default function InterviewPage({ candidate, onFinish }: Props) {
     return () => {
       if (timerIntervalRef.current !== null) {
         window.clearInterval(timerIntervalRef.current);
-        timerIntervalRef.current = null;
       }
     };
   }, []);
@@ -78,19 +132,14 @@ export default function InterviewPage({ candidate, onFinish }: Props) {
     return `${mm}:${ss}`;
   }
 
-  // Use refs to always have fresh values inside MediaRecorder callbacks
   const stepRef = useRef(0);
   const transcriptRef = useRef<DialogTurn[]>([]);
-  const mediaRecorderRef = useRef<MediaRecorder | null>(null);
-  const chunksRef = useRef<Blob[]>([]);
-  const allBlobsRef = useRef<Blob[]>([]);
-  const mimeTypeRef = useRef<string>("audio/webm");
+  const wavRecorderRef = useRef<WavRecorder | null>(null);
+  const allWavBlobsRef = useRef<Blob[]>([]);
   const onFinishRef = useRef(onFinish);
   const candidateRef = useRef(candidate);
   onFinishRef.current = onFinish;
   candidateRef.current = candidate;
-
-  // Mic permission is requested earlier on the preparation screen.
 
   // Load & auto-play TTS for current step
   useEffect(() => {
@@ -98,9 +147,6 @@ export default function InterviewPage({ candidate, onFinish }: Props) {
     const phraseId = step + 1;
     const audio = new Audio(`/api/audio/${phraseId}`);
 
-    // Trim trailing artifact ("noise") at the end of TTS audio.
-    // Phrase 2 — let it play to the natural end (the previous trim was cutting
-    // off ~2s of speech); rely on `onended` to advance to the recording phase.
     const TAIL_TRIM_SEC = phraseId === 2 ? 0 : 0.5;
     let stopped = false;
     const stopEarly = () => {
@@ -136,10 +182,8 @@ export default function InterviewPage({ candidate, onFinish }: Props) {
     };
   }, [step]);
 
-  // Core logic — always reads from refs, never from stale closures
   async function processBlob(blob: Blob) {
-    // Save blob for combined recording upload
-    allBlobsRef.current = [...allBlobsRef.current, blob];
+    allWavBlobsRef.current = [...allWavBlobsRef.current, blob];
     setPhase("transcribing");
     try {
       const result = await transcribeAudio(blob);
@@ -153,13 +197,10 @@ export default function InterviewPage({ candidate, onFinish }: Props) {
       transcriptRef.current = [...transcriptRef.current, turn];
 
       const nextStep = stepRef.current + 1;
-
       if (nextStep < TOTAL_STEPS) {
-        // Move to next phrase
         stepRef.current = nextStep;
         setStep(nextStep);
       } else {
-        // All phrases answered — evaluate
         setPhase("evaluating");
         await doEvaluate();
       }
@@ -173,9 +214,6 @@ export default function InterviewPage({ candidate, onFinish }: Props) {
     try {
       const { id, selected_criteria } = candidateRef.current;
 
-      // Build the full interleaved dialog so YandexGPT has complete context.
-      // Without client phrases the model evaluates candidate answers in isolation
-      // and misses conversational cues (rudeness, empathy, etc.).
       const candidateAnswers = transcriptRef.current;
       const fullDialog: DialogTurn[] = [];
       for (let i = 0; i < TOTAL_STEPS; i++) {
@@ -193,9 +231,8 @@ export default function InterviewPage({ candidate, onFinish }: Props) {
 
       const result = await evaluateCandidate(id, fullDialog, selected_criteria);
 
-      // Upload each recording separately (concatenating webm blobs corrupts playback)
-      if (allBlobsRef.current.length > 0) {
-        uploadRecording(id, allBlobsRef.current).catch(() => {});
+      if (allWavBlobsRef.current.length > 0) {
+        uploadRecording(id, allWavBlobsRef.current).catch(() => {});
       }
 
       onFinishRef.current(result.evaluation, transcript);
@@ -208,27 +245,31 @@ export default function InterviewPage({ candidate, onFinish }: Props) {
   async function startRecording() {
     setErrorMsg("");
     try {
-      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-      const mimeType = MediaRecorder.isTypeSupported("audio/webm") ? "audio/webm" : "audio/ogg";
-      mimeTypeRef.current = mimeType;
-      const recorder = new MediaRecorder(stream, { mimeType });
-      chunksRef.current = [];
+      const stream = await navigator.mediaDevices.getUserMedia({
+        audio: {
+          channelCount: 1,
+          echoCancellation: true,
+          noiseSuppression: true,
+          sampleRate: TARGET_SAMPLE_RATE,
+        },
+      });
 
-      recorder.ondataavailable = (e) => {
-        if (e.data.size > 0) chunksRef.current.push(e.data);
+      // Use sampleRate: TARGET_SAMPLE_RATE hint; browser may honour or override it.
+      const audioContext = new AudioContext({ sampleRate: TARGET_SAMPLE_RATE });
+      const source = audioContext.createMediaStreamSource(stream);
+      const processor = audioContext.createScriptProcessor(4096, 1, 1);
+      const samples: Float32Array[] = [];
+
+      processor.onaudioprocess = (e) => {
+        const data = e.inputBuffer.getChannelData(0);
+        samples.push(new Float32Array(data));
       };
 
-      recorder.onstop = () => {
-        stream.getTracks().forEach((t) => t.stop());
-        const blob = new Blob(chunksRef.current, { type: mimeType });
-        processBlob(blob);
-      };
+      source.connect(processor);
+      // Must connect to destination for onaudioprocess to fire
+      processor.connect(audioContext.destination);
 
-      // Use a small timeslice so chunks are flushed regularly. This avoids a
-      // common MediaRecorder bug where the very last segment of audio is
-      // dropped on stop(), making the recording sound clipped/silent at the end.
-      recorder.start(500);
-      mediaRecorderRef.current = recorder;
+      wavRecorderRef.current = { audioContext, processor, stream, source, samples };
       setPhase("recording");
       startTimer();
     } catch {
@@ -238,33 +279,44 @@ export default function InterviewPage({ candidate, onFinish }: Props) {
   }
 
   function stopRecording() {
-    const recorder = mediaRecorderRef.current;
-    if (!recorder) return;
+    const rec = wavRecorderRef.current;
+    if (!rec) return;
     stopTimer();
-    // Flush any buffered audio (final chunk) BEFORE stopping. Without this,
-    // browsers occasionally drop ~1–2s of trailing audio when stop() is called
-    // immediately after the user finishes speaking.
-    try {
-      recorder.requestData();
-    } catch {
-      /* not supported in some browsers — safe to ignore */
-    }
-    // Slight delay lets the dataavailable event fire before stop().
-    setTimeout(() => {
-      try {
-        recorder.stop();
-      } catch {
-        /* already stopped */
-      }
-    }, 120);
+
+    const { audioContext, processor, stream, source, samples } = rec;
+    source.disconnect();
+    processor.disconnect();
+    stream.getTracks().forEach((t) => t.stop());
+    wavRecorderRef.current = null;
+
     setPhase("transcribing");
+
+    // Merge all Float32 chunks
+    const totalLen = samples.reduce((acc, s) => acc + s.length, 0);
+    const merged = new Float32Array(totalLen);
+    let offset = 0;
+    for (const chunk of samples) {
+      merged.set(chunk, offset);
+      offset += chunk.length;
+    }
+
+    // Downsample to 16000 Hz if needed, then encode as WAV
+    const nativeSampleRate = audioContext.sampleRate;
+    const resampled = downsample(merged, nativeSampleRate, TARGET_SAMPLE_RATE);
+    const wavBlob = encodeWav(resampled, TARGET_SAMPLE_RATE);
+
+    audioContext.close();
+    processBlob(wavBlob);
   }
 
   const isIdle = phase === "ready_to_record" || phase === "mic_error";
-  const isBusy = phase === "loading_audio" || phase === "playing" || phase === "transcribing" || phase === "evaluating";
+  const isBusy =
+    phase === "loading_audio" ||
+    phase === "playing" ||
+    phase === "transcribing" ||
+    phase === "evaluating";
   const isRecording = phase === "recording";
 
-  // Avatar initials
   const initials = CLIENT_NAME.slice(0, 2).toUpperCase();
 
   return (
@@ -286,13 +338,11 @@ export default function InterviewPage({ candidate, onFinish }: Props) {
 
       {/* Center: client avatar + status */}
       <div className="flex flex-col items-center gap-6 py-8">
-        {/* Avatar with animated ring when client is talking */}
         <div className={`relative ${phase === "playing" ? "animate-pulse" : ""}`}>
           <div className={`w-24 h-24 rounded-full flex items-center justify-center text-2xl font-bold text-gray-900
             ${phase === "playing" ? "bg-accent ring-4 ring-accent/40" : "bg-gray-200"} transition`}>
             {initials}
           </div>
-          {/* Recording indicator on avatar */}
           {isRecording && (
             <span className="absolute bottom-1 right-1 w-4 h-4 bg-red-500 rounded-full border-2 border-white animate-pulse" />
           )}
@@ -303,7 +353,6 @@ export default function InterviewPage({ candidate, onFinish }: Props) {
           <p className="text-sm text-gray-500 mt-1">{STATUS_TEXT[phase]}</p>
         </div>
 
-        {/* Loading dots */}
         {isBusy && (
           <div className="flex gap-1.5">
             {[0, 1, 2].map((i) => (
@@ -316,14 +365,12 @@ export default function InterviewPage({ candidate, onFinish }: Props) {
           </div>
         )}
 
-        {/* Mic error message */}
         {phase === "mic_error" && (
           <div className="bg-amber-50 border border-amber-300 text-amber-800 rounded-2xl px-5 py-4 text-sm text-center leading-relaxed max-w-xs">
             Вас не было слышно. Пожалуйста, проверьте микрофон и попробуйте снова.
           </div>
         )}
 
-        {/* Error */}
         {phase === "error" && errorMsg && (
           <div className="bg-red-50 border border-red-200 text-red-700 rounded-2xl px-5 py-4 text-sm text-center max-w-xs">
             {errorMsg}
@@ -333,7 +380,6 @@ export default function InterviewPage({ candidate, onFinish }: Props) {
 
       {/* Bottom: mic button */}
       <div className="w-full pb-6 flex flex-col items-center gap-4">
-        {/* Recording timer — visible only while recording */}
         {isRecording && (
           <div
             className="flex items-center gap-2 bg-gray-900 text-white px-4 py-1.5 rounded-full shadow-md"

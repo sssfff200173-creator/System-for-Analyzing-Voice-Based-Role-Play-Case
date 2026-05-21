@@ -89,7 +89,7 @@ export async function createCandidate(data: CandidateData): Promise<CreateCandid
 
 export async function transcribeAudio(blob: Blob): Promise<TranscribeResponse> {
   const form = new FormData();
-  form.append("audio", blob, "recording.webm");
+  form.append("audio", blob, "recording.wav");
   const res = await fetch(`${BASE}/transcribe`, { method: "POST", body: form });
   return handleResponse<TranscribeResponse>(res);
 }
@@ -169,7 +169,7 @@ export async function deleteCandidate(candidateId: number): Promise<void> {
 export async function uploadRecording(candidateId: number, blobs: Blob[]): Promise<void> {
   const form = new FormData();
   blobs.forEach((blob, i) => {
-    form.append("audio", blob, `recording_${i}.webm`);
+    form.append("audio", blob, `recording_${i}.wav`);
   });
   await fetch(`${BASE}/candidates/${candidateId}/recording`, { method: "POST", body: form });
 }

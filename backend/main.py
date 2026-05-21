@@ -187,25 +187,35 @@ def _seed_data():
         db.close()
 
 
-# ── TTS ───────────────────────────────────────────────────────────────────────
+# ── TTS (Yandex SpeechKit) ────────────────────────────────────────────────────
 
-async def _generate_phrase_audio(client, idx: int, phrase: str) -> bytes:
-    response = await client.audio.speech.create(
-        model="tts-1",
-        voice="nova",
-        input=phrase,
-    )
-    return response.content
+async def _generate_phrase_audio_yandex(phrase: str) -> bytes:
+    yandex_key = os.getenv("YANDEX_API_KEY")
+    folder_id = os.getenv("YANDEX_FOLDER_ID")
+    headers = {"Authorization": f"Api-Key {yandex_key}"}
+    data = {
+        "text": phrase,
+        "lang": "ru-RU",
+        "voice": "jane",
+        "emotion": "evil",
+        "format": "mp3",
+        "folderId": folder_id,
+    }
+    async with httpx.AsyncClient(timeout=30) as client:
+        response = await client.post(
+            "https://tts.api.cloud.yandex.net/speech/v1/tts:synthesize",
+            headers=headers,
+            data=data,
+        )
+        response.raise_for_status()
+        return response.content
 
 
 async def _ensure_tts_audio():
-    openai_key = os.getenv("OPENAI_API_KEY")
-    if not openai_key:
-        logger.warning("OPENAI_API_KEY not set — skipping TTS generation")
+    yandex_key = os.getenv("YANDEX_API_KEY")
+    if not yandex_key:
+        logger.warning("YANDEX_API_KEY not set — skipping TTS generation")
         return
-
-    from openai import AsyncOpenAI
-    client = AsyncOpenAI(api_key=openai_key)
 
     for idx, phrase in enumerate(CLIENT_PHRASES, start=1):
         audio_path = AUDIO_DIR / f"phrase_{idx}.mp3"
@@ -213,12 +223,12 @@ async def _ensure_tts_audio():
             logger.info(f"TTS audio phrase_{idx}.mp3 already cached")
             continue
         try:
-            logger.info(f"Generating TTS for phrase {idx}…")
-            audio_bytes = await _generate_phrase_audio(client, idx, phrase)
+            logger.info(f"Generating TTS for phrase {idx} via Yandex SpeechKit…")
+            audio_bytes = await _generate_phrase_audio_yandex(phrase)
             audio_path.write_bytes(audio_bytes)
             logger.info(f"TTS phrase_{idx}.mp3 saved")
         except Exception as e:
-            logger.error(f"TTS generation failed for phrase {idx}: {e}")
+            logger.error(f"Yandex TTS generation failed for phrase {idx}: {e}")
 
 
 # ── Pydantic models ───────────────────────────────────────────────────────────
@@ -447,30 +457,61 @@ async def get_audio(phrase_id: int):
 
 @app.post("/api/transcribe")
 async def transcribe_audio(audio: UploadFile = File(...)):
-    openai_key = os.getenv("OPENAI_API_KEY")
-    if not openai_key:
-        raise HTTPException(status_code=503, detail="OPENAI_API_KEY не настроен")
+    yandex_key = os.getenv("YANDEX_API_KEY")
+    folder_id = os.getenv("YANDEX_FOLDER_ID")
+    if not yandex_key or not folder_id:
+        raise HTTPException(status_code=503, detail="YANDEX_API_KEY / YANDEX_FOLDER_ID не настроены")
 
     audio_bytes = await audio.read()
     if not audio_bytes:
         raise HTTPException(status_code=400, detail="Пустой аудиофайл")
 
-    from openai import AsyncOpenAI
-    client = AsyncOpenAI(api_key=openai_key)
+    # Strip WAV header to get raw LPCM; read sample rate from header
+    import struct
+    sample_rate = 16000
+    pcm_data = audio_bytes
+    if audio_bytes[:4] == b"RIFF" and len(audio_bytes) > 44:
+        try:
+            sample_rate = struct.unpack_from("<I", audio_bytes, 24)[0]
+        except Exception:
+            sample_rate = 16000
+        # Find "data" chunk (may not be at offset 36 if extra fmt fields exist)
+        data_offset = 44
+        for i in range(12, min(len(audio_bytes) - 8, 256)):
+            if audio_bytes[i:i+4] == b"data":
+                chunk_size = struct.unpack_from("<I", audio_bytes, i + 4)[0]
+                data_offset = i + 8
+                break
+        pcm_data = audio_bytes[data_offset:]
+
+    # Clamp to Yandex-supported rates
+    if sample_rate not in (8000, 16000, 48000):
+        sample_rate = 16000
+
+    params = {
+        "folderId": folder_id,
+        "lang": "ru-RU",
+        "format": "lpcm",
+        "sampleRateHertz": str(sample_rate),
+    }
+    headers = {"Authorization": f"Api-Key {yandex_key}"}
 
     try:
-        response = await client.audio.transcriptions.create(
-            model="whisper-1",
-            file=(
-                audio.filename or "audio.webm",
-                io.BytesIO(audio_bytes),
-                audio.content_type or "audio/webm",
-            ),
-            language="ru",
-        )
-        text = response.text.strip()
+        async with httpx.AsyncClient(timeout=30) as client:
+            response = await client.post(
+                "https://stt.api.cloud.yandex.net/speech/v1/stt:recognize",
+                params=params,
+                headers=headers,
+                content=pcm_data,
+            )
+            response.raise_for_status()
+            result = response.json()
+            text = result.get("result", "").strip()
+    except httpx.HTTPStatusError as e:
+        logger.error(f"Yandex STT HTTP error {e.response.status_code}: {e.response.text}")
+        raise HTTPException(status_code=502, detail=f"Ошибка Yandex SpeechKit: {e.response.text}")
     except Exception as e:
-        logger.error(f"Whisper transcription error: {e}")
+        logger.error(f"Yandex STT error: {e}")
         raise HTTPException(status_code=502, detail=f"Ошибка транскрипции: {str(e)}")
 
     if _is_hallucination(text):
@@ -485,41 +526,42 @@ async def evaluate_candidate(payload: EvaluateRequest, db: Session = Depends(get
     if not candidate:
         raise HTTPException(status_code=404, detail="Кандидат не найден")
 
-    openai_key = os.getenv("OPENAI_API_KEY")
-    if not openai_key:
+    anthropic_key = os.getenv("AI_INTEGRATIONS_ANTHROPIC_API_KEY") or os.getenv("ANTHROPIC_API_KEY")
+    anthropic_base_url = os.getenv("AI_INTEGRATIONS_ANTHROPIC_BASE_URL")
+    if not anthropic_key:
         raise HTTPException(
             status_code=503,
-            detail="OPENAI_API_KEY не настроен",
+            detail="ANTHROPIC_API_KEY не настроен",
         )
 
     selected_criteria = payload.selected_criteria or ALL_CRITERIA
     system_prompt = build_system_prompt(selected_criteria)
     user_text = build_evaluation_prompt(payload.dialog)
 
-    from openai import AsyncOpenAI
-    client = AsyncOpenAI(api_key=openai_key)
+    import anthropic
+    client_kwargs = {"api_key": anthropic_key}
+    if anthropic_base_url:
+        client_kwargs["base_url"] = anthropic_base_url
+    client = anthropic.AsyncAnthropic(**client_kwargs)
 
     try:
-        response = await client.chat.completions.create(
-            model="gpt-4o-mini",
-            temperature=0.1,
+        response = await client.messages.create(
+            model="claude-sonnet-4-5",
             max_tokens=1500,
-            response_format={"type": "json_object"},
-            messages=[
-                {"role": "system", "content": system_prompt},
-                {"role": "user", "content": user_text},
-            ],
+            temperature=0.1,
+            system=system_prompt,
+            messages=[{"role": "user", "content": user_text}],
         )
-        raw_text = response.choices[0].message.content or ""
+        raw_text = response.content[0].text if response.content else ""
     except Exception as e:
-        logger.error(f"OpenAI evaluation request failed: {e}")
-        raise HTTPException(status_code=502, detail="Ошибка запроса к OpenAI")
+        logger.error(f"Claude evaluation request failed: {e}")
+        raise HTTPException(status_code=502, detail="Ошибка запроса к Claude")
 
     try:
         evaluation = _parse_evaluation(raw_text, selected_criteria)
     except Exception as e:
-        logger.error(f"Failed to parse OpenAI response: {e}\nRaw: {raw_text}")
-        raise HTTPException(status_code=502, detail="Не удалось разобрать ответ OpenAI")
+        logger.error(f"Failed to parse Claude response: {e}\nRaw: {raw_text}")
+        raise HTTPException(status_code=502, detail="Не удалось разобрать ответ Claude")
 
     transcript_lines = [f"{t['role']}: {t['text']}" for t in payload.dialog]
     candidate.full_transcript = "\n".join(transcript_lines)
@@ -643,7 +685,12 @@ async def upload_recording(
         saved_count += 1
 
         # Also write to disk as fallback (best-effort, may be lost on restart)
-        ext = "webm" if ct.startswith("audio/webm") else "ogg"
+        if ct.startswith("audio/wav") or ct.startswith("audio/wave"):
+            ext = "wav"
+        elif ct.startswith("audio/ogg"):
+            ext = "ogg"
+        else:
+            ext = "webm"
         try:
             path = AUDIO_DIR / f"candidate_{candidate_id}_{idx}.{ext}"
             path.write_bytes(audio_bytes)
