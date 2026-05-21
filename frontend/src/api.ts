@@ -55,6 +55,7 @@ export interface SessionListItem {
   created_at: string | null;
   status: string;
   candidate: {
+    id: number;
     name: string;
     phone: string;
     verdict: string | null;
@@ -106,12 +107,50 @@ export async function evaluateCandidate(
   return handleResponse<EvaluateResponse>(res);
 }
 
-export async function createSession(): Promise<SessionResponse> {
-  const res = await fetch(`${BASE}/sessions`, { method: "POST" });
+export async function createSession(selected_criteria: string[]): Promise<SessionResponse> {
+  const res = await fetch(`${BASE}/sessions`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ selected_criteria }),
+  });
   return handleResponse<SessionResponse>(res);
+}
+
+export interface SessionDetail {
+  session_id: string;
+  status: string;
+  selected_criteria: string[];
+}
+
+export async function getSession(sessionId: string): Promise<SessionDetail> {
+  const res = await fetch(`${BASE}/sessions/${sessionId}`);
+  return handleResponse<SessionDetail>(res);
 }
 
 export async function getSessions(): Promise<SessionListItem[]> {
   const res = await fetch(`${BASE}/sessions`);
   return handleResponse<SessionListItem[]>(res);
+}
+
+export interface CandidateResult {
+  id: number;
+  name: string;
+  phone: string;
+  selected_criteria: string[];
+  transcript: string | null;
+  evaluation: Evaluation | null;
+  audio_urls: string[];
+}
+
+export async function getResults(candidateId: number): Promise<CandidateResult> {
+  const res = await fetch(`${BASE}/results/${candidateId}`);
+  return handleResponse<CandidateResult>(res);
+}
+
+export async function uploadRecording(candidateId: number, blobs: Blob[]): Promise<void> {
+  const form = new FormData();
+  blobs.forEach((blob, i) => {
+    form.append("audio", blob, `recording_${i}.webm`);
+  });
+  await fetch(`${BASE}/candidates/${candidateId}/recording`, { method: "POST", body: form });
 }

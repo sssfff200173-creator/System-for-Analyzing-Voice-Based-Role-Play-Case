@@ -1,12 +1,12 @@
 import { useState, useMemo } from "react";
 import HRDashboard from "./pages/HRDashboard";
 import StartPage from "./pages/StartPage";
-import CriteriaPage from "./pages/CriteriaPage";
+import PreparationPage from "./pages/PreparationPage";
 import InterviewPage from "./pages/InterviewPage";
 import CandidateThanks from "./pages/CandidateThanks";
 import type { Evaluation } from "./api";
 
-type CandidateScreen = "start" | "criteria" | "interview" | "thanks";
+type CandidateScreen = "start" | "preparation" | "interview" | "thanks";
 
 export interface CandidateInfo {
   id: number;
@@ -30,13 +30,7 @@ export default function App() {
 
   function handleRegistered(info: CandidateInfo) {
     setCandidate(info);
-    setScreen("criteria");
-  }
-
-  function handleCriteriaDone(criteria: string[]) {
-    if (!candidate) return;
-    setCandidate({ ...candidate, selected_criteria: criteria });
-    setScreen("interview");
+    setScreen("preparation");
   }
 
   function handleFinish(_evaluation: Evaluation, _transcript: string) {
@@ -48,12 +42,8 @@ export default function App() {
       {screen === "start" && (
         <StartPage onRegistered={handleRegistered} sessionId={sessionId} />
       )}
-      {screen === "criteria" && candidate && (
-        <CriteriaPage
-          candidateId={candidate.id}
-          defaultCriteria={candidate.selected_criteria}
-          onDone={handleCriteriaDone}
-        />
+      {screen === "preparation" && (
+        <PreparationPage onReady={() => setScreen("interview")} />
       )}
       {screen === "interview" && candidate && (
         <InterviewPage candidate={candidate} onFinish={handleFinish} />

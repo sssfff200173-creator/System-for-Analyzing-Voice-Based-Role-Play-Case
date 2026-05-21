@@ -22,6 +22,7 @@ class Candidate(Base):
     selected_criteria = Column(String, nullable=True)
     full_transcript = Column(Text, nullable=True)
     evaluation_json = Column(Text, nullable=True)
+    audio_path = Column(String, nullable=True)
     created_at = Column(DateTime, default=datetime.utcnow)
 
 
@@ -32,6 +33,7 @@ class InterviewSession(Base):
     created_at = Column(DateTime, default=datetime.utcnow)
     candidate_id = Column(Integer, nullable=True)
     status = Column(String, default="pending")  # pending / in_progress / completed / demo
+    selected_criteria = Column(String, nullable=True)  # JSON list, set by HR on link creation
 
 
 def get_db():
@@ -44,3 +46,21 @@ def get_db():
 
 def init_db():
     Base.metadata.create_all(bind=engine)
+    # Add audio_path column if it doesn't exist (migration for existing DBs)
+    try:
+        with engine.connect() as conn:
+            conn.execute(__import__("sqlalchemy").text(
+                "ALTER TABLE candidates ADD COLUMN audio_path VARCHAR"
+            ))
+            conn.commit()
+    except Exception:
+        pass  # Column already exists
+    # Add selected_criteria to interview_sessions if it doesn't exist
+    try:
+        with engine.connect() as conn:
+            conn.execute(__import__("sqlalchemy").text(
+                "ALTER TABLE interview_sessions ADD COLUMN selected_criteria VARCHAR"
+            ))
+            conn.commit()
+    except Exception:
+        pass  # Column already exists

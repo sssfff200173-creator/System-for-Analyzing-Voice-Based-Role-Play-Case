@@ -29,6 +29,13 @@ export default function CandidateThanks({ name }: Props) {
         <p className="text-gray-600 text-sm leading-relaxed">
           Ваши ответы успешно записаны. Мы свяжемся с вами по результатам оценки.
         </p>
+
+        <p className="mt-8 text-xs text-gray-400 leading-relaxed">
+          При возникновении технических проблем, пожалуйста, напишите (со снимками экрана) на почту:{" "}
+          <a href="mailto:role_cases_assessor.sup@mail.ru" className="underline hover:text-gray-600">
+            role_cases_assessor.sup@mail.ru
+          </a>
+        </p>
       </div>
     </div>
   );

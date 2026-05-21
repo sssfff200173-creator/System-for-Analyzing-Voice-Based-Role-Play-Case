@@ -1,5 +1,5 @@
 import { useState, useRef, useEffect } from "react";
-import { transcribeAudio, evaluateCandidate } from "../api";
+import { transcribeAudio, evaluateCandidate, uploadRecording } from "../api";
 import type { Evaluation, DialogTurn } from "../api";
 import type { CandidateInfo } from "../App";
 
@@ -24,8 +24,8 @@ const CLIENT_NAME = "Клиент";
 
 // Must match backend/config.py CLIENT_PHRASES exactly
 const CLIENT_PHRASES = [
-  "Алё, Здрасте!!.. Я вчера покупала у вас телефон, забрала его из пункта выдачи, а когда пришла домой и открыла — поняла, что там огромная царапина на весь экран!!! Пришла сегодня снова в пункт выдачи, хотела вернуть, а его видите ли не принимают!!! В ваших правилах вообще ничего не понятно! Что мне теперь делать с этим дурацким телефоном!!!",
-  "Я уже третий раз звоню вам! Вы вообще ничего не можете решить!! Для чего вы там сидите!!!",
+  "Алё, здравствуйте! Я вчера покупала у вас телефон, забрала его из пункта выдачи. А когда пришла домой и открыла — поняла, что там огромная царапина на весь экран! Пришла сегодня снова в пункт выдачи, хотела вернуть, а его видите ли не принимают! В ваших правилах вообще ничего не понятно! Что мне теперь делать с этим дурацким телефоном!",
+  "Я уже третий раз звоню вам! Вы вообще ничего не можете решить! Для чего вы там сидите!",
 ];
 
 const STATUS_TEXT: Record<PhaseState, string> = {
@@ -49,10 +49,21 @@ export default function InterviewPage({ candidate, onFinish }: Props) {
   const transcriptRef = useRef<DialogTurn[]>([]);
   const mediaRecorderRef = useRef<MediaRecorder | null>(null);
   const chunksRef = useRef<Blob[]>([]);
+  const allBlobsRef = useRef<Blob[]>([]);
+  const mimeTypeRef = useRef<string>("audio/webm");
   const onFinishRef = useRef(onFinish);
   const candidateRef = useRef(candidate);
   onFinishRef.current = onFinish;
   candidateRef.current = candidate;
+
+  // Pre-request mic permission on mount so the browser dialog + system sound
+  // happen BEFORE the TTS audio starts playing, not right after it ends.
+  useEffect(() => {
+    navigator.mediaDevices
+      .getUserMedia({ audio: true })
+      .then((stream) => stream.getTracks().forEach((t) => t.stop()))
+      .catch(() => {});
+  }, []);
 
   // Load & auto-play TTS for current step
   useEffect(() => {
@@ -60,21 +71,47 @@ export default function InterviewPage({ candidate, onFinish }: Props) {
     const phraseId = step + 1;
     const audio = new Audio(`/api/audio/${phraseId}`);
 
+    // Trim trailing artifact ("noise") at the end of TTS audio.
+    // Phrase 2 has a longer tail noise — trim more aggressively.
+    const TAIL_TRIM_SEC = phraseId === 2 ? 1.35 : 0.5;
+    let stopped = false;
+    const stopEarly = () => {
+      if (stopped) return;
+      stopped = true;
+      audio.pause();
+      setPhase("ready_to_record");
+    };
+
     audio.oncanplaythrough = () => {
       setPhase("playing");
       audio.play().catch(() => setPhase("ready_to_record"));
     };
+    audio.ontimeupdate = () => {
+      if (
+        !stopped &&
+        audio.duration &&
+        isFinite(audio.duration) &&
+        audio.currentTime >= audio.duration - TAIL_TRIM_SEC
+      ) {
+        stopEarly();
+      }
+    };
     audio.onerror = () => setPhase("ready_to_record");
-    audio.onended = () => setPhase("ready_to_record");
+    audio.onended = () => stopEarly();
 
     return () => {
+      audio.oncanplaythrough = null;
+      audio.ontimeupdate = null;
+      audio.onerror = null;
+      audio.onended = null;
       audio.pause();
-      audio.src = "";
     };
   }, [step]);
 
   // Core logic — always reads from refs, never from stale closures
   async function processBlob(blob: Blob) {
+    // Save blob for combined recording upload
+    allBlobsRef.current = [...allBlobsRef.current, blob];
     setPhase("transcribing");
     try {
       const result = await transcribeAudio(blob);
@@ -127,6 +164,12 @@ export default function InterviewPage({ candidate, onFinish }: Props) {
         .join("\n\n");
 
       const result = await evaluateCandidate(id, fullDialog, selected_criteria);
+
+      // Upload each recording separately (concatenating webm blobs corrupts playback)
+      if (allBlobsRef.current.length > 0) {
+        uploadRecording(id, allBlobsRef.current).catch(() => {});
+      }
+
       onFinishRef.current(result.evaluation, transcript);
     } catch (err: unknown) {
       setErrorMsg(err instanceof Error ? err.message : "Ошибка оценки");
@@ -139,6 +182,7 @@ export default function InterviewPage({ candidate, onFinish }: Props) {
     try {
       const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
       const mimeType = MediaRecorder.isTypeSupported("audio/webm") ? "audio/webm" : "audio/ogg";
+      mimeTypeRef.current = mimeType;
       const recorder = new MediaRecorder(stream, { mimeType });
       chunksRef.current = [];
 

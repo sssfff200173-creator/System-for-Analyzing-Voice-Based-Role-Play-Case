@@ -8,6 +8,9 @@ from datetime import datetime, timedelta
 from pathlib import Path
 from typing import List, Optional
 
+from dotenv import load_dotenv
+load_dotenv()
+
 import httpx
 from fastapi import FastAPI, Depends, UploadFile, File, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
@@ -288,14 +291,31 @@ def _parse_evaluation(raw_json: str, selected_criteria: List[str]) -> dict:
 
 # ── Routes ────────────────────────────────────────────────────────────────────
 
+class SessionCreate(BaseModel):
+    selected_criteria: List[str] = ALL_CRITERIA
+
+
 @app.post("/api/sessions")
-def create_session(db: Session = Depends(get_db)):
+def create_session(payload: SessionCreate = SessionCreate(), db: Session = Depends(get_db)):
     sid = uuid.uuid4().hex[:10]
-    session = InterviewSession(session_id=sid)
+    valid_criteria = [c for c in payload.selected_criteria if c in ALL_CRITERIA] or ALL_CRITERIA
+    session = InterviewSession(
+        session_id=sid,
+        selected_criteria=json.dumps(valid_criteria, ensure_ascii=False),
+    )
     db.add(session)
     db.commit()
-    logger.info(f"Created session: {sid}")
-    return {"session_id": sid}
+    logger.info(f"Created session: {sid} with criteria: {valid_criteria}")
+    return {"session_id": sid, "selected_criteria": valid_criteria}
+
+
+@app.get("/api/sessions/{session_id}")
+def get_session(session_id: str, db: Session = Depends(get_db)):
+    session = db.query(InterviewSession).filter(InterviewSession.session_id == session_id).first()
+    if not session:
+        raise HTTPException(status_code=404, detail="Сессия не найдена")
+    criteria = json.loads(session.selected_criteria) if session.selected_criteria else ALL_CRITERIA
+    return {"session_id": session.session_id, "status": session.status, "selected_criteria": criteria}
 
 
 @app.get("/api/sessions")
@@ -319,6 +339,7 @@ def list_sessions(db: Session = Depends(get_db)):
             if c:
                 ev = json.loads(c.evaluation_json) if c.evaluation_json else None
                 item["candidate"] = {
+                    "id": c.id,
                     "name": c.candidate_name,
                     "phone": c.candidate_phone,
                     "verdict": ev["verdict"] if ev else None,
@@ -336,7 +357,23 @@ def create_candidate(payload: CandidateCreate, db: Session = Depends(get_db)):
             status_code=400,
             detail="Необходимо дать согласие на обработку персональных данных",
         )
-    valid_criteria = [c for c in payload.selected_criteria if c in ALL_CRITERIA]
+    # Use criteria from session if available, otherwise from payload
+    session_criteria = None
+    if payload.session_id and payload.session_id != "demo":
+        sess = db.query(InterviewSession).filter(
+            InterviewSession.session_id == payload.session_id
+        ).first()
+        if sess and sess.selected_criteria:
+            session_criteria = json.loads(sess.selected_criteria)
+
+    if session_criteria:
+        valid_criteria = [c for c in session_criteria if c in ALL_CRITERIA]
+    else:
+        valid_criteria = [c for c in payload.selected_criteria if c in ALL_CRITERIA]
+
+    if not valid_criteria:
+        valid_criteria = ALL_CRITERIA
+
     candidate = Candidate(
         candidate_name=payload.name.strip(),
         candidate_phone=payload.phone.strip(),
@@ -413,53 +450,41 @@ async def evaluate_candidate(payload: EvaluateRequest, db: Session = Depends(get
     if not candidate:
         raise HTTPException(status_code=404, detail="Кандидат не найден")
 
-    yandex_key = os.getenv("YANDEX_API_KEY")
-    yandex_folder = os.getenv("YANDEX_FOLDER_ID")
-    if not yandex_key or not yandex_folder:
+    openai_key = os.getenv("OPENAI_API_KEY")
+    if not openai_key:
         raise HTTPException(
             status_code=503,
-            detail="YANDEX_API_KEY или YANDEX_FOLDER_ID не настроен",
+            detail="OPENAI_API_KEY не настроен",
         )
 
     selected_criteria = payload.selected_criteria or ALL_CRITERIA
     system_prompt = build_system_prompt(selected_criteria)
     user_text = build_evaluation_prompt(payload.dialog)
 
-    request_body = {
-        "modelUri": f"gpt://{yandex_folder}/yandexgpt/latest",
-        "completionOptions": {"stream": False, "temperature": 0.1, "maxTokens": 1500},
-        "messages": [
-            {"role": "system", "text": system_prompt},
-            {"role": "user", "text": user_text},
-        ],
-    }
+    from openai import AsyncOpenAI
+    client = AsyncOpenAI(api_key=openai_key)
 
     try:
-        async with httpx.AsyncClient(timeout=60.0) as http_client:
-            resp = await http_client.post(
-                "https://llm.api.cloud.yandex.net/foundationModels/v1/completion",
-                headers={
-                    "Authorization": f"Api-Key {yandex_key}",
-                    "Content-Type": "application/json",
-                },
-                json=request_body,
-            )
-            resp.raise_for_status()
-            result = resp.json()
-    except httpx.HTTPStatusError as e:
-        logger.error(f"YandexGPT API error: {e.response.text}")
-        raise HTTPException(status_code=502, detail="Ошибка запроса к YandexGPT")
+        response = await client.chat.completions.create(
+            model="gpt-4o-mini",
+            temperature=0.1,
+            max_tokens=1500,
+            response_format={"type": "json_object"},
+            messages=[
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_text},
+            ],
+        )
+        raw_text = response.choices[0].message.content or ""
     except Exception as e:
-        logger.error(f"YandexGPT request failed: {e}")
-        raise HTTPException(status_code=502, detail="Не удалось получить оценку")
-
-    raw_text = result["result"]["alternatives"][0]["message"]["text"]
+        logger.error(f"OpenAI evaluation request failed: {e}")
+        raise HTTPException(status_code=502, detail="Ошибка запроса к OpenAI")
 
     try:
         evaluation = _parse_evaluation(raw_text, selected_criteria)
     except Exception as e:
-        logger.error(f"Failed to parse YandexGPT response: {e}\nRaw: {raw_text}")
-        raise HTTPException(status_code=502, detail="Не удалось разобрать ответ YandexGPT")
+        logger.error(f"Failed to parse OpenAI response: {e}\nRaw: {raw_text}")
+        raise HTTPException(status_code=502, detail="Не удалось разобрать ответ OpenAI")
 
     transcript_lines = [f"{t['role']}: {t['text']}" for t in payload.dialog]
     candidate.full_transcript = "\n".join(transcript_lines)
@@ -484,6 +509,10 @@ def get_results(candidate_id: int, db: Session = Depends(get_db)):
         raise HTTPException(status_code=404, detail="Кандидат не найден")
     evaluation = json.loads(candidate.evaluation_json) if candidate.evaluation_json else None
     selected = json.loads(candidate.selected_criteria) if candidate.selected_criteria else ALL_CRITERIA
+    audio_paths = _parse_audio_paths(candidate.audio_path)
+    audio_urls = [
+        f"/api/candidates/{candidate_id}/recording/{i}" for i in range(len(audio_paths))
+    ]
     return {
         "id": candidate.id,
         "name": candidate.candidate_name,
@@ -491,4 +520,71 @@ def get_results(candidate_id: int, db: Session = Depends(get_db)):
         "selected_criteria": selected,
         "transcript": candidate.full_transcript,
         "evaluation": evaluation,
+        "audio_urls": audio_urls,
     }
+
+
+def _parse_audio_paths(raw: Optional[str]) -> List[str]:
+    """audio_path may be a JSON list (new) or a single path string (legacy)."""
+    if not raw:
+        return []
+    try:
+        parsed = json.loads(raw)
+        if isinstance(parsed, list):
+            return parsed
+    except Exception:
+        pass
+    return [raw]  # legacy single-path format
+
+
+@app.post("/api/candidates/{candidate_id}/recording")
+async def upload_recording(
+    candidate_id: int,
+    audio: List[UploadFile] = File(...),
+    db: Session = Depends(get_db),
+):
+    candidate = db.query(Candidate).filter(Candidate.id == candidate_id).first()
+    if not candidate:
+        raise HTTPException(status_code=404, detail="Кандидат не найден")
+    if not audio:
+        raise HTTPException(status_code=400, detail="Нет аудиофайлов")
+
+    saved_paths: List[str] = []
+    for idx, file in enumerate(audio):
+        audio_bytes = await file.read()
+        if not audio_bytes:
+            continue
+        ext = "webm" if (file.content_type or "").startswith("audio/webm") else "ogg"
+        filename = f"candidate_{candidate_id}_{idx}.{ext}"
+        path = AUDIO_DIR / filename
+        path.write_bytes(audio_bytes)
+        saved_paths.append(str(path))
+
+    if not saved_paths:
+        raise HTTPException(status_code=400, detail="Пустые аудиофайлы")
+
+    candidate.audio_path = json.dumps(saved_paths, ensure_ascii=False)
+    db.commit()
+    logger.info(f"Saved {len(saved_paths)} recording(s) for candidate {candidate_id}")
+    return {
+        "status": "ok",
+        "audio_urls": [
+            f"/api/candidates/{candidate_id}/recording/{i}" for i in range(len(saved_paths))
+        ],
+    }
+
+
+@app.get("/api/candidates/{candidate_id}/recording/{index}")
+def get_recording(candidate_id: int, index: int, db: Session = Depends(get_db)):
+    candidate = db.query(Candidate).filter(Candidate.id == candidate_id).first()
+    if not candidate:
+        raise HTTPException(status_code=404, detail="Кандидат не найден")
+    paths = _parse_audio_paths(candidate.audio_path)
+    if index < 0 or index >= len(paths):
+        raise HTTPException(status_code=404, detail="Запись не найдена")
+    audio_path = Path(paths[index])
+    if not audio_path.exists():
+        raise HTTPException(status_code=404, detail="Аудиофайл не найден на диске")
+    suffix = audio_path.suffix.lstrip(".")
+    media_type = f"audio/{suffix}" if suffix else "audio/webm"
+    return FileResponse(str(audio_path), media_type=media_type)
