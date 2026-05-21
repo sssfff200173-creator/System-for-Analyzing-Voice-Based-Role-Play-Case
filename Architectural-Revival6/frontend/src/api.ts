@@ -43,11 +43,17 @@ export type Verdict =
   | "Частичное соответствие"
   | "Не рекомендуется";
 
+export interface CriterionComment {
+  comment: string;
+  evidence_quotes: string[];
+}
+
 export interface Evaluation {
   verdict: Verdict;
   markers: Markers;
   scores?: Record<string, number>;
   quotes: string[] | Record<string, string>;
+  criterion_comments?: Record<string, CriterionComment>;
   filler_words_count?: number;
   comment: string;
   selected_criteria: string[];

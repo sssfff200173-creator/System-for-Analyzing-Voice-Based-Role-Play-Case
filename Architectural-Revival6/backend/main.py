@@ -80,105 +80,16 @@ def _seed_data():
         if orphans:
             db.commit()
 
-        # Seed test candidates only if seed sessions don't exist yet
-        already_seeded = db.query(InterviewSession).filter(
-            InterviewSession.session_id.in_(["seed-1", "seed-2"])
-        ).count()
-        if already_seeded >= 2:
-            return
-
-        criteria = ["filler_words", "rudeness", "politeness", "coherence"]
-        criteria_json = json.dumps(criteria, ensure_ascii=False)
-
-        # ── Test candidate 1: Рекомендуется ───────────────────────────────
-        ev1 = {
-            "verdict": "Рекомендуется",
-            "markers": {
-                "filler_words_count": 1,
-                "filler_words_examples": ["ну"],
-                "rudeness_count": 0,
-                "rudeness_examples": [],
-                "politeness_count": 4,
-                "politeness_examples": [
-                    "Я вас понимаю",
-                    "Приношу свои извинения",
-                    "Спасибо за обращение",
-                    "Давайте я помогу вам решить этот вопрос",
-                ],
-                "coherence_score": 9,
-                "coherence_issues": [],
-            },
-            "quotes": ["Я вас понимаю, это неприятная ситуация"],
-            "comment": "Кандидат демонстрирует высокую клиентоориентированность, чёткую речь и эмпатию. Рекомендуется к найму.",
-            "selected_criteria": criteria,
-        }
-        c1 = Candidate(
-            candidate_name="Анна Сидорова",
-            candidate_phone="+7 (999) 123-45-67",
-            selected_criteria=criteria_json,
-            full_transcript=(
-                "[Клиент]: Алё, Здрасте!!.. Я вчера покупала у вас телефон...\n"
-                "[Кандидат]: Здравствуйте! Я вас понимаю, это неприятная ситуация. "
-                "Приношу свои извинения. Давайте я помогу вам решить этот вопрос."
-            ),
-            evaluation_json=json.dumps(ev1, ensure_ascii=False),
-            created_at=datetime.utcnow() - timedelta(days=2),
-        )
-        db.add(c1)
+        # Remove legacy seed candidates if they still exist
+        for sid in ["seed-1", "seed-2"]:
+            sess = db.query(InterviewSession).filter(InterviewSession.session_id == sid).first()
+            if sess:
+                if sess.candidate_id:
+                    cand = db.query(Candidate).filter(Candidate.id == sess.candidate_id).first()
+                    if cand:
+                        db.delete(cand)
+                db.delete(sess)
         db.commit()
-        db.refresh(c1)
-        db.add(InterviewSession(
-            session_id="seed-1",
-            status="completed",
-            candidate_id=c1.id,
-            created_at=c1.created_at,
-        ))
-
-        # ── Test candidate 2: Не рекомендуется ────────────────────────────
-        ev2 = {
-            "verdict": "Не рекомендуется",
-            "markers": {
-                "filler_words_count": 5,
-                "filler_words_examples": ["ну", "вот", "это самое", "ну", "ладно"],
-                "rudeness_count": 1,
-                "rudeness_examples": ["я же говорю"],
-                "politeness_count": 0,
-                "politeness_examples": [],
-                "coherence_score": 4,
-                "coherence_issues": [
-                    "Ответ не соответствует вопросу клиента",
-                    "Мысль не завершена, перепрыгивание между темами",
-                ],
-            },
-            "quotes": ["Ну, я же говорю, что вот надо было это самое..."],
-            "comment": (
-                "Выявлены грубость и большое количество слов-паразитов. "
-                "Речь бессвязна. Рекомендуется дополнительное обучение."
-            ),
-            "selected_criteria": criteria,
-        }
-        c2 = Candidate(
-            candidate_name="Иван Козлов",
-            candidate_phone="+7 (999) 987-65-43",
-            selected_criteria=criteria_json,
-            full_transcript=(
-                "[Клиент]: Я уже третий раз звоню вам!..\n"
-                "[Кандидат]: Ну, я же говорю, что вот надо было это самое... ладно, давайте."
-            ),
-            evaluation_json=json.dumps(ev2, ensure_ascii=False),
-            created_at=datetime.utcnow() - timedelta(days=1),
-        )
-        db.add(c2)
-        db.commit()
-        db.refresh(c2)
-        db.add(InterviewSession(
-            session_id="seed-2",
-            status="completed",
-            candidate_id=c2.id,
-            created_at=c2.created_at,
-        ))
-        db.commit()
-        logger.info("Seeded 2 test candidates")
 
     except Exception as e:
         logger.error(f"Seed data error: {e}")
@@ -322,11 +233,16 @@ def _calculate_verdict(
     filler_threshold: int,
     include_filler: bool = True,
 ) -> str:
+    auto_reject = False
+    if scores.get("speech_quality_structure") == 0:
+        auto_reject = True
+    if scores.get("ethics") == 0:
+        auto_reject = True
     if include_filler and filler_count > filler_threshold:
+        auto_reject = True
+    if auto_reject:
         return "Не рекомендуется"
     if not scores:
-        return "Не рекомендуется"
-    if any(v == 0 for v in scores.values()):
         return "Не рекомендуется"
     total = sum(scores.values())
     max_total = len(scores) * 2
@@ -334,7 +250,7 @@ def _calculate_verdict(
     if p >= 75:
         return "Рекомендуется"
     elif p >= 40:
-        return "Требуется дополнительная проверка"
+        return "Частичное соответствие"
     else:
         return "Не рекомендуется"
 
@@ -638,18 +554,22 @@ async def evaluate_candidate(payload: EvaluateRequest, db: Session = Depends(get
     main_selected = [c for c in selected_criteria if c in MAIN_CRITERIA]
     include_filler = "filler_words" in selected_criteria
     case_1 = llm_data.get("case_1", {})
-    scores = {k: _safe_int(v) for k, v in case_1.get("scores", {}).items() if k in main_selected}
-    quotes = case_1.get("quotes", {})
+    scores = {k: _safe_int(v) for k, v in case_1.items() if k in main_selected}
+    criterion_comments = case_1.get("criterion_comments", {})
     filler_count = _safe_int(llm_data.get("filler_words_count", 0))
     summary = llm_data.get("summary", "")
+    comment = summary.get("conclusion", "") if isinstance(summary, dict) else (summary or "")
     verdict = _calculate_verdict(scores, filler_count, payload.filler_threshold, include_filler)
 
     evaluation = {
         "verdict": verdict,
         "scores": scores,
-        "quotes": quotes,
+        "criterion_comments": criterion_comments,
+        "quotes": {},
         "filler_words_count": filler_count,
-        "comment": summary,
+        "comment": comment,
+        "summary": summary,
+        "reasoning": case_1.get("reasoning", ""),
         "selected_criteria": selected_criteria,
         "markers": {},
     }
@@ -745,6 +665,7 @@ async def evaluate_multi(payload: EvaluateMultiRequest, db: Session = Depends(ge
 
     filler_count = _safe_int(llm_data.get("filler_words_count", 0))
     summary = llm_data.get("summary", "")
+    comment = summary.get("conclusion", "") if isinstance(summary, dict) else (summary or "")
 
     all_case_scores: List[dict] = []
     case_results = []
@@ -753,8 +674,8 @@ async def evaluate_multi(payload: EvaluateMultiRequest, db: Session = Depends(ge
         case_key = case_input.case_key
         case_cfg = CASES.get(case_key, CASES["maria"])
         case_data = llm_data.get(f"case_{i + 1}", {})
-        scores = {k: _safe_int(v) for k, v in case_data.get("scores", {}).items() if k in main_selected}
-        quotes = case_data.get("quotes", {})
+        scores = {k: _safe_int(v) for k, v in case_data.items() if k in main_selected}
+        criterion_comments = case_data.get("criterion_comments", {})
         all_case_scores.append(scores)
 
         candidate_turns = [t for t in case_input.dialog if t.get("role") == "Кандидат"]
@@ -765,9 +686,11 @@ async def evaluate_multi(payload: EvaluateMultiRequest, db: Session = Depends(ge
             "case_name": case_cfg["name"],
             "case_description": case_cfg["description"],
             "scores": scores,
-            "quotes": quotes,
+            "criterion_comments": criterion_comments,
+            "quotes": {},
             "verdict": "",
             "comment": "",
+            "reasoning": case_data.get("reasoning", ""),
             "selected_criteria": selected_criteria,
             "markers": {},
             "transcript": transcript,
@@ -793,8 +716,9 @@ async def evaluate_multi(payload: EvaluateMultiRequest, db: Session = Depends(ge
     evaluation_json = {
         "is_multi_case": True,
         "verdict": overall_verdict,
-        "comment": summary,
-        "combined_comment": summary,
+        "comment": comment,
+        "combined_comment": comment,
+        "summary": summary,
         "filler_words_count": filler_count,
         "cases": case_results,
         "selected_criteria": selected_criteria,

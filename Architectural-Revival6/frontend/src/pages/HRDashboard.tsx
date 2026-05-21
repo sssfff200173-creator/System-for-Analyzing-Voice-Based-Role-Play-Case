@@ -4,17 +4,17 @@ import { createSession, getSessions, getResults, deleteCandidate } from "../api"
 import CandidateDetail from "./CandidateDetail";
 
 const CRITERION_LABEL: Record<string, string> = {
-  speech_quality: "Качество речи",
-  ethics_and_respect: "Деловая этика",
-  engagement_and_solution: "Вовлечённость и подход",
-  emotional_stability: "Эмоц. стабильность",
+  speech_quality_structure: "Качество и структура речи",
+  ethics: "Деловая этика",
+  empathy_support: "Вовлечённость и поддержка клиента",
+  emotional_stability: "Эмоциональная стабильность",
   filler_words: "Слова-паразиты",
 };
 
 const MAIN_CRITERIA_KEYS = [
-  "speech_quality",
-  "ethics_and_respect",
-  "engagement_and_solution",
+  "speech_quality_structure",
+  "ethics",
+  "empathy_support",
   "emotional_stability",
 ];
 
@@ -61,6 +61,14 @@ interface SessionResult {
   } | null;
 }
 
+function safeComment(comment: unknown): string {
+  if (!comment) return "";
+  if (typeof comment === "string") return comment;
+  if (typeof comment === "object" && comment !== null && "conclusion" in comment)
+    return (comment as { conclusion: string }).conclusion ?? "";
+  return "";
+}
+
 function formatDate(iso: string | null): string {
   if (!iso) return "";
   return new Date(iso).toLocaleDateString("ru-RU", {
@@ -71,11 +79,11 @@ function formatDate(iso: string | null): string {
 }
 
 const ALL_CRITERIA_OPTIONS = [
-  { key: "speech_quality", label: "Качество речи" },
-  { key: "ethics_and_respect", label: "Деловая этика" },
-  { key: "engagement_and_solution", label: "Вовлечённость" },
-  { key: "emotional_stability", label: "Эмоц. стабильность" },
-  { key: "filler_words", label: "Слова-паразиты" },
+  { key: "speech_quality_structure", label: "Качество и структура речи", tip: "Насколько понятен и логичен ответ кандидата" },
+  { key: "ethics", label: "Деловая этика", tip: "Вежливость, профессиональный тон, отсутствие грубости и мата" },
+  { key: "empathy_support", label: "Вовлечённость и поддержка клиента", tip: "Признаёт ли кандидат ситуацию клиента и поддерживает ли его" },
+  { key: "emotional_stability", label: "Эмоциональная стабильность", tip: "Сохраняет ли кандидат самообладание под давлением негативного клиента" },
+  { key: "filler_words", label: "Слова-паразиты", tip: "Вы можете указать допустимый лимит слов-паразитов, при превышении кандидат получит автоматический отказ" },
 ];
 
 type VerdictFilter = "all" | "rec" | "partial" | "notrec";
@@ -88,7 +96,7 @@ export default function HRDashboard() {
   const [copied, setCopied] = useState(false);
   const [selectedCandidateId, setSelectedCandidateId] = useState<number | null>(null);
   const [selectedCriteria, setSelectedCriteria] = useState<string[]>(
-    ["speech_quality", "ethics_and_respect", "engagement_and_solution", "emotional_stability", "filler_words"]
+    ["speech_quality_structure", "ethics", "empathy_support", "emotional_stability", "filler_words"]
   );
   const [selectedCases, setSelectedCases] = useState<string[]>(["maria"]);
   const [fillerThreshold, setFillerThreshold] = useState(2);
@@ -188,10 +196,10 @@ export default function HRDashboard() {
         "Дата интервью",
         "Вердикт",
         "Слова-паразиты (кол-во)",
-        "Качество речи (0-2)",
+        "Качество и структура речи (0-2)",
         "Деловая этика (0-2)",
-        "Вовлечённость (0-2)",
-        "Эмоц. стабильность (0-2)",
+        "Эмпатия и ориентация на решение (0-2)",
+        "Эмоциональная стабильность (0-2)",
         "Критерии",
         "Комментарий",
       ];
@@ -213,12 +221,12 @@ export default function HRDashboard() {
           dateStr,
           c.verdict ?? "",
           sc.includes("filler_words") ? String(fillerCount ?? "") : "",
-          sc.includes("speech_quality") ? String(scores["speech_quality"] ?? "") : "",
-          sc.includes("ethics_and_respect") ? String(scores["ethics_and_respect"] ?? "") : "",
-          sc.includes("engagement_and_solution") ? String(scores["engagement_and_solution"] ?? "") : "",
+          sc.includes("speech_quality_structure") ? String(scores["speech_quality_structure"] ?? "") : "",
+          sc.includes("ethics") ? String(scores["ethics"] ?? "") : "",
+          sc.includes("empathy_support") ? String(scores["empathy_support"] ?? "") : "",
           sc.includes("emotional_stability") ? String(scores["emotional_stability"] ?? "") : "",
           selected.join(", "),
-          ev?.comment ?? c.comment ?? "",
+          safeComment(ev?.comment ?? c.comment),
         ]);
       }
 
@@ -344,32 +352,42 @@ export default function HRDashboard() {
 
         <p className="text-xs text-gray-500 mb-2">Критерии оценки для кандидата:</p>
         <div className="grid grid-cols-2 gap-2 mb-1">
-          {ALL_CRITERIA_OPTIONS.map(({ key, label }) => {
+          {ALL_CRITERIA_OPTIONS.map(({ key, label, tip }) => {
             const checked = selectedCriteria.includes(key);
             return (
-              <button
-                key={key}
-                type="button"
-                onClick={() => toggleCriterion(key)}
-                className={`flex items-center gap-2 px-3 py-2 rounded-xl border text-xs font-medium transition ${
-                  checked
-                    ? "border-accent bg-yellow-50 text-gray-900"
-                    : "border-gray-200 bg-gray-50 text-gray-400"
-                }`}
-              >
-                <div
-                  className={`w-4 h-4 rounded flex items-center justify-center flex-shrink-0 border ${
-                    checked ? "bg-accent border-accent" : "border-gray-300"
+              <div key={key} className="relative">
+                <button
+                  type="button"
+                  onClick={() => toggleCriterion(key)}
+                  className={`w-full flex items-center gap-2 px-3 py-2 rounded-xl border text-xs font-medium transition ${
+                    checked
+                      ? "border-accent bg-yellow-50 text-gray-900"
+                      : "border-gray-200 bg-gray-50 text-gray-400"
                   }`}
                 >
-                  {checked && (
-                    <svg className="w-3 h-3 text-gray-900" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={3} d="M5 13l4 4L19 7" />
-                    </svg>
-                  )}
+                  <div
+                    className={`w-4 h-4 rounded flex items-center justify-center flex-shrink-0 border ${
+                      checked ? "bg-accent border-accent" : "border-gray-300"
+                    }`}
+                  >
+                    {checked && (
+                      <svg className="w-3 h-3 text-gray-900" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={3} d="M5 13l4 4L19 7" />
+                      </svg>
+                    )}
+                  </div>
+                  {label}
+                </button>
+                <div className="group absolute top-1.5 right-1.5 z-10">
+                  <div className={`w-4 h-4 rounded-full flex items-center justify-center cursor-default text-[10px] font-bold leading-none ${checked ? "bg-yellow-200 text-yellow-700" : "bg-gray-200 text-gray-400"}`}>
+                    i
+                  </div>
+                  <div className="pointer-events-none absolute bottom-full right-0 mb-1.5 hidden group-hover:block w-44 bg-gray-900 text-white text-xs rounded-lg px-2.5 py-2 leading-snug shadow-lg">
+                    {tip}
+                    <div className="absolute top-full right-2 border-4 border-transparent border-t-gray-900" />
+                  </div>
                 </div>
-                {label}
-              </button>
+              </div>
             );
           })}
         </div>
@@ -609,8 +627,8 @@ export default function HRDashboard() {
                     </button>
                   </div>
                 </div>
-                {c.comment && (
-                  <p className="text-xs text-gray-600 mt-2 leading-relaxed">{c.comment}</p>
+                {safeComment(c.comment) && (
+                  <p className="text-xs text-gray-600 mt-2 leading-relaxed">{safeComment(c.comment)}</p>
                 )}
                 {c.created_at && (
                   <p className="text-xs text-gray-400 mt-2">{formatDate(c.created_at)}</p>

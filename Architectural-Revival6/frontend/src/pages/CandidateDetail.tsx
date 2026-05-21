@@ -1,12 +1,12 @@
 import { useState, useEffect, useRef } from "react";
 import { getResults } from "../api";
-import type { CandidateResult, CaseEvaluation, Evaluation, Markers } from "../api";
+import type { CandidateResult, CaseEvaluation, CriterionComment, Evaluation, Markers } from "../api";
 
 const CRITERION_DISPLAY_NAMES: Record<string, string> = {
-  speech_quality: "Качество речи",
-  ethics_and_respect: "Деловая этика",
-  engagement_and_solution: "Вовлечённость и подход",
-  emotional_stability: "Эмоц. стабильность",
+  speech_quality_structure: "Качество и структура речи",
+  ethics: "Деловая этика",
+  empathy_support: "Вовлечённость и поддержка клиента",
+  emotional_stability: "Эмоциональная стабильность",
 };
 
 function AudioPlayer({ src }: { src: string }) {
@@ -102,19 +102,27 @@ function scoreStyle(score: number): { border: string; badge: string; label: stri
   return { border: "border-red-400", badge: "bg-red-100 text-red-700", label: "0 / 2" };
 }
 
-function ScoreCard({ criterionKey, score, quote }: { criterionKey: string; score: number; quote?: string }) {
+function ScoreCard({ criterionKey, score, criterionComment }: { criterionKey: string; score: number; criterionComment?: CriterionComment }) {
   const name = CRITERION_DISPLAY_NAMES[criterionKey] ?? criterionKey;
   const { border, badge, label } = scoreStyle(score);
+  const hasContent = criterionComment && (criterionComment.comment || (criterionComment.evidence_quotes ?? []).length > 0);
   return (
     <div className={`bg-white rounded-2xl border-2 ${border} p-5`}>
       <div className="flex items-center justify-between mb-2">
         <p className="font-semibold text-gray-800 text-sm">{name}</p>
         <span className={`text-lg font-bold px-3 py-1 rounded-xl ${badge}`}>{label}</span>
       </div>
-      {quote ? (
-        <p className="text-xs text-gray-600 bg-gray-50 rounded-lg px-3 py-2 mt-1">«{quote}»</p>
+      {hasContent ? (
+        <div className="mt-2 space-y-1.5">
+          {criterionComment!.comment && (
+            <p className="text-xs text-gray-600 leading-relaxed">{criterionComment!.comment}</p>
+          )}
+          {(criterionComment!.evidence_quotes ?? []).map((q, i) => (
+            <p key={i} className="text-xs text-gray-500 bg-gray-50 rounded-lg px-3 py-1.5 border-l-2 border-gray-300">«{q}»</p>
+          ))}
+        </div>
       ) : score === 2 ? (
-        <p className="text-xs text-gray-400 italic">Нарушений не выявлено</p>
+        <p className="text-xs text-gray-400 italic mt-1">Нарушений не выявлено</p>
       ) : null}
     </div>
   );
@@ -281,9 +289,8 @@ function EvaluationView({ evaluation, audioUrls, transcript }: {
   const showEmpathy = selected.includes("empathy");
   const showInfoCorrectness = selected.includes("information_correctness");
 
-  const quotes = evaluation.quotes ?? {};
-  const quotesDict = Array.isArray(quotes) ? {} : (quotes as Record<string, string>);
-  const quotesArr = Array.isArray(quotes) ? (quotes as string[]) : [];
+  const criterionComments = (evaluation.criterion_comments ?? {}) as Record<string, CriterionComment>;
+  const quotesArr = Array.isArray(evaluation.quotes) ? (evaluation.quotes as string[]) : [];
   const fillerCount = evaluation.filler_words_count ?? (m as Record<string, number>)?.filler_words_count ?? 0;
 
   return (
@@ -294,9 +301,11 @@ function EvaluationView({ evaluation, audioUrls, transcript }: {
         </div>
         <div className="min-w-0">
           <p className={`text-lg font-bold ${vc.title}`}>{evaluation.verdict}</p>
-          {evaluation.comment && (
-            <p className={`text-sm mt-1 leading-relaxed ${vc.body}`}>{evaluation.comment}</p>
-          )}
+          {(() => {
+            const c = evaluation.comment;
+            const text = !c ? "" : typeof c === "string" ? c : typeof c === "object" && "conclusion" in (c as object) ? (c as { conclusion: string }).conclusion : "";
+            return text ? <p className={`text-sm mt-1 leading-relaxed ${vc.body}`}>{text}</p> : null;
+          })()}
         </div>
       </div>
 
@@ -308,7 +317,7 @@ function EvaluationView({ evaluation, audioUrls, transcript }: {
                 key={key}
                 criterionKey={key}
                 score={score}
-                quote={quotesDict[key]}
+                criterionComment={criterionComments[key]}
               />
             ))}
             <FillerWordsBlock count={fillerCount} selected={selected} />
@@ -473,14 +482,18 @@ function MultiCaseEvaluationView({
         </div>
       )}
 
-      {combinedComment && (
-        <div className="bg-gray-900 text-white rounded-2xl p-5 mb-4">
-          <p className="text-xs font-semibold text-gray-400 uppercase tracking-wide mb-2">
-            Итоговое резюме
-          </p>
-          <p className="text-sm leading-relaxed">{combinedComment}</p>
-        </div>
-      )}
+      {(() => {
+        const raw: unknown = combinedComment;
+        const text = !raw ? "" : typeof raw === "string" ? raw : typeof raw === "object" && raw !== null && "conclusion" in raw ? (raw as { conclusion: string }).conclusion : "";
+        return text ? (
+          <div className="bg-gray-900 text-white rounded-2xl p-5 mb-4">
+            <p className="text-xs font-semibold text-gray-400 uppercase tracking-wide mb-2">
+              Итоговое резюме
+            </p>
+            <p className="text-sm leading-relaxed">{text}</p>
+          </div>
+        ) : null;
+      })()}
 
       {fillerCount !== undefined && selected.includes("filler_words") && (
         <div className="mb-4">
